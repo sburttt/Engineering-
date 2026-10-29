@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "validate": "esbuild scripts/validate-data.ts --bundle --platform=node --format=esm --log-level=warning --outfile=node_modules/.cache/validate-data.mjs && node node_modules/.cache/validate-data.mjs",
-    "test:e2e": "node scripts/e2e.mjs"
+    "test:e2e": "node scripts/e2e.mjs",
+    "check:geometry": "esbuild scripts/check-geometry.ts --bundle --platform=node --format=esm --log-level=warning --outfile=node_modules/.cache/check-geometry.mjs && node node_modules/.cache/check-geometry.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

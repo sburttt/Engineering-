@@ -14,6 +14,7 @@ npm run dev            # http://localhost:5173
 npm run build          # type-check + production build → dist/
 npm run build:single   # one self-contained HTML file → artifact/nightfall.html
 npm run validate       # data-integrity checks (no browser)
+npm run check:geometry # internals inside the skin, no see-through holes, markings on the skin
 npm run test:e2e -- 'http://127.0.0.1:4173/?render=low' e2e-shots   # 69 browser checks + screenshots (preview server running)
 ```
 

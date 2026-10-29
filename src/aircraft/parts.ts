@@ -19,9 +19,11 @@ import {
   hUp,
   lerp,
   mouldNormal,
+  outerTop,
   smoothstep,
   xLE,
   zBody,
+  zEdgeInner,
 } from './geometry/airframe';
 import {
   P3,
@@ -128,6 +130,11 @@ function bodyPatch(
       if (cluster === 'both') t = (edgeCluster(v) + 1) / 2;
       else if (cluster === 'b') t = Math.sin((v * Math.PI) / 2);
       const z = lerp(zA(x), zB(x), t);
+      // On the chine, upper and lower skins must meet on exactly the same edge line (no slit).
+      if (Math.abs(z) >= zEdgeInner(x) - 0.0035) {
+        const ze = Math.sign(z) * zEdgeInner(x);
+        return [x, (hUp(x, ze) + hLo(x, ze)) / 2 + off(s, lift), ze];
+      }
       return [x, h(x, z) + off(s, lift), z];
     },
     s === 'up' ? UP : DOWN,
@@ -251,15 +258,45 @@ function surfaceNormalUp(x: number, z: number, s: Surf) {
   return s === 'up' ? new THREE.Vector3(-dx, 1, -dz).normalize() : new THREE.Vector3(dx, -1, dz).normalize();
 }
 
-/** A flat decal quad tangent to the upper surface. `along` is the text baseline direction in plan view. */
+/**
+ * A marking that wraps onto the skin: a fine grid whose every vertex sits 3 mm above the mould line,
+ * so long stencils follow the curvature instead of floating off it. `along` is the text baseline
+ * direction in plan view; the text reads correctly from outside the aircraft.
+ */
 function decal(x: number, z: number, w: number, h: number, s: Surf, along: THREE.Vector3): THREE.BufferGeometry {
-  const n = surfaceNormalUp(x, z, s);
-  const right = along.clone().sub(n.clone().multiplyScalar(along.dot(n))).normalize();
-  const up = new THREE.Vector3().crossVectors(n, right).normalize();
-  const g = new THREE.PlaneGeometry(w, h);
-  const m = new THREE.Matrix4().makeBasis(right, up, n);
-  m.setPosition(new THREE.Vector3(x, H(s)(x, z) + off(s, 0.006), z));
-  g.applyMatrix4(m);
+  const n0 = new THREE.Vector3(0, s === 'up' ? 1 : -1, 0);
+  const right = new THREE.Vector3(along.x, 0, along.z).normalize();
+  const up = new THREE.Vector3().crossVectors(n0, right).normalize();
+  const nu = Math.max(8, Math.ceil(w / 0.05));
+  const nv = Math.max(3, Math.ceil(h / 0.05));
+  const pos: number[] = [];
+  const nor: number[] = [];
+  const uv: number[] = [];
+  const idx: number[] = [];
+  const nn: [number, number, number] = [0, 1, 0];
+  for (let i = 0; i <= nu; i++)
+    for (let j = 0; j <= nv; j++) {
+      const u = i / nu;
+      const v = j / nv;
+      const px = x + right.x * (u - 0.5) * w + up.x * (v - 0.5) * h;
+      const pz = z + right.z * (u - 0.5) * w + up.z * (v - 0.5) * h;
+      pos.push(px, H(s)(px, pz) + off(s, 0.003), pz);
+      mouldNormal(px, pz, s, nn);
+      nor.push(...nn);
+      uv.push(u, v);
+    }
+  const row = nv + 1;
+  for (let i = 0; i < nu; i++)
+    for (let j = 0; j < nv; j++) {
+      const k = i * row + j;
+      // counter-clockwise when seen from outside (right × up = outward normal)
+      idx.push(k, k + row, k + 1, k + row, k + row + 1, k + 1);
+    }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
   return g;
 }
 
@@ -314,6 +351,8 @@ function accessPanel(id: string, x0: number, x1: number, z0: number, z1: number,
 /* ------------------------------------------------------------------ */
 
 const BAY = { x0: -1.2, x1: 1.8, z: 0.6 };
+/** Spanwise segments on a shared 5 cm grid, so neighbouring wing patches have identical edge vertices. */
+const SPAN_N = (a: number, b: number) => Math.max(1, Math.round((b - a) / 0.05));
 
 export function buildParts(): Part[] {
   const parts: Part[] = [];
@@ -419,10 +458,10 @@ export function buildParts(): Part[] {
   for (const [side, sign] of [['port', -1], ['stbd', 1]] as const) {
     const wid = `wing-${side}`;
     for (const surf of ['up', 'lo'] as Surf[]) {
-      add({ key: `${wid}-${surf}`, componentId: wid, geometry: wingPatch(sign, ROOT_Z, TIP_Z, 0, HINGE_S, surf, 48, 40), mat: 'skin', role: 'shell', skin: surf });
+      add({ key: `${wid}-${surf}`, componentId: wid, geometry: wingPatch(sign, ROOT_Z, TIP_Z, 0, HINGE_S, surf, SPAN_N(ROOT_Z, TIP_Z), 40), mat: 'skin', role: 'shell', skin: surf });
       // fixed trailing-edge strips between elevons
       for (const [a, b] of [[ROOT_Z, EL_IN[0]], [EL_IN[1], EL_OUT[0]], [EL_OUT[1], TIP_Z]]) {
-        add({ key: `${wid}-te-${a}-${surf}`, componentId: wid, geometry: wingPatch(sign, a, b, HINGE_S, 1, surf, 6, 8), mat: 'skin', role: 'shell', skin: surf });
+        add({ key: `${wid}-te-${a}-${surf}`, componentId: wid, geometry: wingPatch(sign, a, b, HINGE_S, 1, surf, SPAN_N(a, b), 8), mat: 'skin', role: 'shell', skin: surf });
       }
       // tip blade
       add({ key: `tip-${side}-${surf}`, componentId: `tip-${side}`, geometry: wingPatch(sign, TIP_Z, HALF_SPAN, 0, 1, surf, 14, 36), mat: 'skin', role: 'shell', skin: surf });
@@ -430,10 +469,38 @@ export function buildParts(): Part[] {
     // elevons (closed shells, hinged on s = HINGE_S)
     for (const [nm, [a, b]] of [['in', EL_IN], ['out', EL_OUT]] as const) {
       const id = `elevon-${side}-${nm}`;
+      // Closed control surface: skins meet the fixed wing exactly at the hinge line and the
+      // fixed trailing-edge strips; a hinge wall and end caps close the box, so there is never a
+      // see-through gap (also when deflected).
+      const wallAt = (sc: number, z0: number, z1: number) => {
+        const top: P3[] = [];
+        const bot: P3[] = [];
+        for (let i = 0; i <= 16; i++) {
+          const az = lerp(z0, z1, i / 16);
+          const x = xLE(az) - sc * chord(az);
+          top.push([x, hUp(x, az * sign), az * sign]);
+          bot.push([x, hLo(x, az * sign), az * sign]);
+        }
+        return stripBetween(top, bot);
+      };
+      const capAt = (az: number) => {
+        const top: P3[] = [];
+        const bot: P3[] = [];
+        for (let i = 0; i <= 10; i++) {
+          const x = xLE(az) - lerp(HINGE_S, 1, i / 10) * chord(az);
+          top.push([x, hUp(x, az * sign), az * sign]);
+          bot.push([x, hLo(x, az * sign), az * sign]);
+        }
+        return stripBetween(top, bot);
+      };
       const g = mergeGeos([
-        wingPatch(sign, a + 0.02, b - 0.02, HINGE_S + 0.004, 1, 'up', 16, 8, 0.001),
-        wingPatch(sign, a + 0.02, b - 0.02, HINGE_S + 0.004, 1, 'lo', 16, 8, 0.001),
+        wingPatch(sign, a, b, HINGE_S, 1, 'up', SPAN_N(a, b), 8),
+        wingPatch(sign, a, b, HINGE_S, 1, 'lo', SPAN_N(a, b), 8),
+        wallAt(HINGE_S + 0.004, a, b),
+        capAt(a + 0.003),
+        capAt(b - 0.003),
       ]);
+      add({ key: `${id}-cove`, componentId: wid, geometry: mergeGeos([wallAt(HINGE_S, a, b), capAt(a - 0.002), capAt(b + 0.002)]), mat: 'skin', role: 'shell' });
       const hp = (az: number): P3 => {
         const x = xLE(az) - HINGE_S * chord(az);
         const z = az * sign;
@@ -692,13 +759,20 @@ function equipmentBay(): Part[] {
   const floorAt = (xx: number, zz: number) => hLo(xx, zz);
   const len = x1 - x0;
   const cx = (x0 + x1) / 2;
-  const wallH = ceil - floorAt(cx, z) + 0.04;
+  // walls run from the bay ceiling down to the inside of the belly skin (they never pass through it)
+  const wall = (pts: [number, number][]) =>
+    stripBetween(
+      pts.map(([xx, zz]) => [xx, ceil, zz] as P3),
+      pts.map(([xx, zz]) => [xx, floorAt(xx, zz) + 0.012, zz] as P3),
+    );
+  const runX = (zz: number) => Array.from({ length: 25 }, (_, i) => [lerp(x0 - 0.02, x1 + 0.02, i / 24), zz] as [number, number]);
+  const runZ = (xx: number) => Array.from({ length: 13 }, (_, i) => [xx, lerp(-z - 0.02, z + 0.02, i / 12)] as [number, number]);
   const shell = mergeGeos([
-    baked(new THREE.BoxGeometry(len + 0.1, 0.02, z * 2 + 0.06), [cx, ceil, 0]),
-    baked(new THREE.BoxGeometry(len + 0.1, wallH, 0.02), [cx, ceil - wallH / 2, z + 0.02]),
-    baked(new THREE.BoxGeometry(len + 0.1, wallH, 0.02), [cx, ceil - wallH / 2, -z - 0.02]),
-    baked(new THREE.BoxGeometry(0.02, wallH, z * 2 + 0.06), [x1 + 0.04, ceil - wallH / 2, 0]),
-    baked(new THREE.BoxGeometry(0.02, wallH, z * 2 + 0.06), [x0 - 0.04, ceil - wallH / 2, 0]),
+    baked(new THREE.BoxGeometry(len + 0.04, 0.02, z * 2 + 0.04), [cx, ceil, 0]),
+    wall(runX(z + 0.02)),
+    wall(runX(-z - 0.02)),
+    wall(runZ(x1 + 0.02)),
+    wall(runZ(x0 - 0.02)),
   ]);
   out.push({ key: 'bay-shell', componentId: 'bay', geometry: shell, mat: 'interior', role: 'internal' });
   const rails = mergeGeos([
@@ -857,21 +931,29 @@ function interior(): Part[] {
     new THREE.Vector3(-0.6, 0.42, 0),
     new THREE.Vector3(-2.05, 0.2, 0),
   ]);
-  out.push(
-    I(
-      'duct',
-      'inlet-duct',
-      loftTube(
-        (t) => ductPath.getPoint(t),
-        (t) => lerp(0.7, 0.36, smoothstep(0, 0.85, t)),
-        (t) => lerp(0.12, 0.36, smoothstep(0, 0.9, t)),
-        (t) => lerp(3.2, 2, smoothstep(0, 0.7, t)),
-        48,
-        36,
-      ),
-      'duct',
-    ),
+  // S-shaped duct from the dorsal inlet down to the engine face. Its section is clipped to stay
+  // 5 cm inside the outer skin everywhere, so it can never show through the fairing or body.
+  const ductGeo = loftTube(
+    (t) => ductPath.getPoint(t),
+    (t) => lerp(0.62, 0.36, smoothstep(0, 0.85, t)),
+    (t) => lerp(0.14, 0.36, smoothstep(0, 0.9, t)),
+    (t) => lerp(3.2, 2, smoothstep(0, 0.7, t)),
+    56,
+    40,
   );
+  {
+    const pos = ductGeo.getAttribute('position');
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      let z = pos.getZ(i);
+      const zMax = (x > FAIRING_TAIL_X && x < X_FWD ? fairingWidth(x) : zBody(x)) * 0.8;
+      z = Math.max(-zMax, Math.min(zMax, z));
+      const y = Math.max(hLo(x, z) + 0.05, Math.min(outerTop(x, z) - 0.05, pos.getY(i)));
+      pos.setXYZ(i, x, y, z);
+    }
+    ductGeo.computeVertexNormals();
+  }
+  out.push(I('duct', 'inlet-duct', ductGeo, 'duct'));
 
   /* Propulsion unit */
   const eY = (x: number) => lerp(0.2, 0.1, (-2.05 - x) / 2.95);
@@ -917,11 +999,15 @@ function interior(): Part[] {
   {
     const frames: THREE.BufferGeometry[] = [];
     for (const x of [6.3, 5.2, 3.85, 2.55, -1.3, -2.0, -3.4, -5.6]) {
-      const W = Math.min(zBody(x), 2.3) * 0.97;
+      // as wide as the body allows while leaving room for the frame inside the skin
+      let W = Math.min(zBody(x), 2.3) * 0.97;
+      const room = (zz: number) => Math.min(hUp(x, zz), hUp(x - 0.04, zz)) - Math.max(hLo(x, zz), hLo(x - 0.04, zz));
+      while (W > 0.3 && room(W) < 0.09) W -= 0.01;
       const ym = (hUp(x, 0) + hLo(x, 0)) / 2;
       const outer = (th: number): [number, number] => {
         const z = W * Math.cos(th);
-        const y = Math.sin(th) >= 0 ? hUp(x, z) - 0.02 : hLo(x, z) + 0.02;
+        // the frame is 4 cm deep: stay inside the skin at both of its faces
+        const y = Math.sin(th) >= 0 ? Math.min(hUp(x, z), hUp(x - 0.04, z)) - 0.025 : Math.max(hLo(x, z), hLo(x - 0.04, z)) + 0.025;
         return [z, y];
       };
       const inner = (th: number): [number, number] => {

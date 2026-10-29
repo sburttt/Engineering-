@@ -233,8 +233,19 @@ export function fairingPoint(u: number, v: number): [number, number, number] {
   const w = fairingWidth(xBase);
   const z = v * w;
   const cross = Math.pow(Math.max(0, 1 - v * v), 1.2);
-  const y = hUp(x, z) + fairingRise(u) * cross + 0.004;
+  // the small lift fades to zero at the edge so the fairing meets the body skin flush (no slit)
+  const y = hUp(x, z) + fairingRise(u) * cross + 0.004 * Math.min(1, cross * 6);
   return [x, y, z];
+}
+
+/** Top of the closed outer surface at plan point (x, z), including the dorsal fairing (used to keep internals inside). */
+export function outerTop(x: number, z: number) {
+  let y = hUp(x, z);
+  if (x >= FAIRING_TAIL_X && x <= X_FWD) {
+    const v = z / fairingWidth(x);
+    if (Math.abs(v) < 1) y += fairingRise(clamp((x - FAIRING_TAIL_X) / (X_FWD - FAIRING_TAIL_X))) * Math.pow(1 - v * v, 1.2);
+  }
+  return y;
 }
 
 /* ---------------- Derived envelope (used by spec sheet + validation) ---------------- */
