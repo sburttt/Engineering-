@@ -37,7 +37,7 @@ async function newPage(viewport) {
 }
 const state = (page) => page.evaluate(() => {
   const s = window.__nightfall.store.getState();
-  return { tab: s.tab, selectedId: s.selectedId, focusId: s.focusId, isolate: s.isolate, cutaway: s.cutaway, explode: s.explode, payloadId: s.payloadId, preset: s.preset, bayOpen: s.bayOpen, renderStatus: s.renderStatus };
+  return { tab: s.tab, mode: s.mode, pitch: s.pitch, selectedId: s.selectedId, focusId: s.focusId, isolate: s.isolate, cutaway: s.cutaway, explode: s.explode, payloadId: s.payloadId, preset: s.preset, bayOpen: s.bayOpen, renderStatus: s.renderStatus };
 });
 /** Click on triangles of a component's real geometry (projected to screen) until the expected selection happens. */
 async function pickComponent(page, id, ok) {
@@ -92,23 +92,257 @@ async function pickComponent(page, id, ok) {
 }
 const shot = (page, name) => page.screenshot({ path: `${OUT}/${name}.png` });
 
-/* ---------------- Desktop ---------------- */
-const page = await newPage({ width: 1280, height: 800 });
-await page.goto(URL + '#overview');
-await page.waitForFunction(() => window.__nightfall?.store?.getState().renderStatus === 'ready', null, { timeout: 30000 });
-await page.waitForTimeout(2500);
-await shot(page, '01-overview');
-check('App starts and WebGL scene reports ready', (await state(page)).renderStatus === 'ready');
-check('Model is built from many named parts', (await page.evaluate(() => window.__nightfall.parts)) > 100);
+/** Projected screen rectangle of the whole aircraft (meshes only), relative to the canvas. */
+const aircraftRect = (page) =>
+  page.evaluate(() => {
+    const nf = window.__nightfall;
+    const c = document.querySelector('.viewport canvas').getBoundingClientRect();
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const v = nf.camera.position.clone();
+    for (const [id, set] of nf.registry) {
+      if (id.startsWith('payload-')) continue;
+      for (const o of set) {
+        if (!o.geometry || !o.parent.visible) continue;
+        o.updateWorldMatrix(true, false);
+        o.geometry.computeBoundingBox();
+        const b = o.geometry.boundingBox;
+        for (let k = 0; k < 8; k++) {
+          v.set(k & 1 ? b.max.x : b.min.x, k & 2 ? b.max.y : b.min.y, k & 4 ? b.max.z : b.min.z).applyMatrix4(o.matrixWorld).project(nf.camera);
+          const sx = ((v.x + 1) / 2) * c.width;
+          const sy = ((1 - v.y) / 2) * c.height;
+          x0 = Math.min(x0, sx); x1 = Math.max(x1, sx); y0 = Math.min(y0, sy); y1 = Math.max(y1, sy);
+        }
+      }
+    }
+    return { x0, y0, x1, y1, w: c.width, h: c.height };
+  });
+const camState = (page) =>
+  page.evaluate(() => {
+    const { camera, controls } = window.__nightfall;
+    return { p: camera.position.toArray(), t: controls.target.toArray(), d: camera.position.distanceTo(controls.target) };
+  });
+const settle = (page, ms = 1800) => page.waitForTimeout(ms);
+const presetBtn = (page, label) => page.locator('.presets').getByRole('button', { name: label, exact: true });
 
-// Model bounds vs specification sheet
+/* ---------------- Desktop ---------------- */
+const page = await newPage({ width: 1440, height: 900 });
+await page.goto(URL);
+await page.waitForFunction(() => window.__nightfall?.store?.getState().renderStatus === 'ready', null, { timeout: 60000 });
+await settle(page, 3000);
+await shot(page, '01-hero');
+let st = await state(page);
+check('Opens directly on the aircraft viewer (Hero preset)', st.tab === 'aircraft' && st.preset === 'hero');
+check('Model is built from many named parts', (await page.evaluate(() => window.__nightfall.parts)) > 100);
+check('Opening caption shows the NIGHTFALL designation', (await page.locator('.caption-wrap.on .nf-title').count()) === 1);
+check('CORVANE logo is in the header', (await page.locator('.hdr .brand svg[aria-label="Corvane emblem"]').count()) === 1);
+let r = await aircraftRect(page);
+check('Hero frame: aircraft uncropped and dominant', r.x0 > 0 && r.y0 > 0 && r.x1 < r.w && r.y1 < r.h && (r.x1 - r.x0) / r.w > 0.45, `spans ${Math.round(r.x0)}–${Math.round(r.x1)} of ${r.w}px`);
+
+// Presets: direction and framing
+const DIRS = { Front: [1, 0, 0], Side: [0, 0, 1], Top: [0, 1, 0], Rear: [-1, 0, 0], Under: [0, -1, 0], Hero: [0.67, 0.27, 0.69] };
+for (const label of ['Front', 'Side', 'Top', 'Rear', 'Under', 'Hero']) {
+  await presetBtn(page, label).click();
+  await settle(page, 2200);
+  await shot(page, `02-preset-${label.toLowerCase()}`);
+  const c = await camState(page);
+  const d = c.p.map((v, i) => v - c.t[i]);
+  const len = Math.hypot(...d);
+  const want = DIRS[label];
+  const wl = Math.hypot(...want);
+  const dot = d.reduce((a, v, i) => a + (v / len) * (want[i] / wl), 0);
+  r = await aircraftRect(page);
+  const inFrame = r.x0 > -2 && r.y0 > -2 && r.x1 < r.w + 2 && r.y1 < r.h + 2;
+  check(`Preset ${label}: correct direction and whole aircraft in frame`, dot > 0.97 && inFrame, `dot ${dot.toFixed(3)}, x ${Math.round(r.x0)}–${Math.round(r.x1)}, y ${Math.round(r.y0)}–${Math.round(r.y1)}`);
+}
+check('Preset state follows the selected view', (await state(page)).preset === 'hero');
+
+// Orbit with mouse drag
+const vp = await page.locator('.viewport canvas').boundingBox();
+const cx = vp.x + vp.width / 2;
+const cy = vp.y + vp.height / 2;
+const before = await camState(page);
+await page.mouse.move(cx + 250, cy - 200);
+await page.mouse.down();
+await page.mouse.move(cx + 80, cy - 160, { steps: 12 });
+await page.mouse.up();
+await settle(page, 900);
+st = await state(page);
+const afterOrbit = await camState(page);
+check('Drag orbits the camera without selecting', st.selectedId === null && Math.hypot(...afterOrbit.p.map((v, i) => v - before.p[i])) > 1, `moved ${Math.hypot(...afterOrbit.p.map((v, i) => v - before.p[i])).toFixed(2)} m`);
+check('Exploring hides the opening caption (free orbit)', st.preset === null && (await page.locator('.caption-wrap.on').count()) === 0);
+
+// Zoom: wheel, limits, never inside the airframe
+await page.mouse.move(cx, cy);
+const d0 = (await camState(page)).d;
+await page.mouse.wheel(0, -500);
+await settle(page, 700);
+const d1 = (await camState(page)).d;
+check('Wheel zooms toward the aircraft centre', d1 < d0 - 0.5, `${d0.toFixed(1)} → ${d1.toFixed(1)} m`);
+for (let i = 0; i < 25; i++) await page.mouse.wheel(0, -600);
+await settle(page, 900);
+const inside = await page.evaluate(() => ({ d: window.__nightfall.camera.position.distanceTo(window.__nightfall.controls.target) }));
+check('Zoom stops at a minimum distance', inside.d >= 1.15, `${inside.d.toFixed(2)} m`);
+await shot(page, '03-zoomed-in');
+await settle(page, 1500);
+await page.locator('.tools').getByRole('button', { name: 'Reset view' }).click();
+await settle(page, 2400);
+{
+  const s1 = await state(page);
+  const c = await camState(page);
+  check('Reset view returns to Hero', s1.preset === 'hero' && Math.abs(c.d - before.d) < 1.5, `preset ${s1.preset}, d ${c.d.toFixed(1)} vs ${before.d.toFixed(1)}`);
+}
+
+// Clicks select exactly the part under the pointer (incl. near edges)
+let agree = 0;
+let tested = 0;
+for (let gx = 0.12; gx <= 0.88; gx += 0.06)
+  for (let gy = 0.25; gy <= 0.75; gy += 0.06) {
+    const x = vp.x + vp.width * gx;
+    const y = vp.y + vp.height * gy;
+    const hit = await page.evaluate(([x, y]) => window.__nightfall.probe(x, y), [x, y]);
+    if (!hit || !hit.componentId) continue;
+    const covered = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.tagName !== 'CANVAS', [x, y]);
+    if (covered) continue;
+    await page.mouse.click(x, y);
+    await page.waitForTimeout(120);
+    const sel = (await state(page)).selectedId;
+    const expected = await page.evaluate((id) => window.__nightfall.resolvePick(id), hit.componentId);
+    tested++;
+    if (sel === expected) agree++;
+    await page.keyboard.press('Escape');
+  }
+check('Clicks select the component under the pointer', tested >= 15 && agree === tested, `${agree}/${tested} sample points`);
+
+// Click-select → panel, no automatic camera jump
+const camBeforeSel = await camState(page);
+const picked = await pickComponent(page, 'wing-stbd', (id) => id === 'wing-stbd');
+check('Clicking the wing geometry selects the wing', picked === 'wing-stbd', picked ?? 'none');
+await settle(page, 900);
+const title = (await page.locator('.cp-title').innerText()).trim();
+check('Information panel names the selected component', title === 'Starboard Outer Wing', title);
+check('Panel explains the design role', (await page.locator('.cp-body').innerText()).includes('DESIGN ROLE') || (await page.locator('.cp-body h3').first().innerText()).length > 0);
+check('Selecting does not move the camera by itself', Math.hypot(...(await camState(page)).p.map((v, i) => v - camBeforeSel.p[i])) < 0.05);
+await shot(page, '04-selected');
+
+// Focus view → sub-component → isolate → back
+const camBeforeFocus = await camState(page);
+await page.locator('.cp').getByRole('button', { name: 'Focus view' }).click();
+await settle(page, 2000);
+st = await state(page);
+const camFocus = await camState(page);
+check('Focus view moves the camera to the component', st.focusId === 'wing-stbd' && camFocus.d < camBeforeFocus.d - 2, `${camBeforeFocus.d.toFixed(1)} → ${camFocus.d.toFixed(1)} m`);
+const wingStillSolid = await page.evaluate(() => [...window.__nightfall.registry.get('ctr-body')].every((o) => o.material.opacity === 1 && o.parent.visible));
+check('Focus keeps the rest of the aircraft visible (no ghosting)', wingStillSolid);
+await shot(page, '05-focus');
+const sub = await pickComponent(page, 'elevon-stbd-out', (id) => id === 'elevon-stbd-out');
+check('Sub-components are pickable in focus', sub === 'elevon-stbd-out', sub ?? 'none');
+await page.locator('.focus-bar').getByRole('button', { name: 'Isolate' }).click();
+await settle(page, 900);
+const ctrHidden = await page.evaluate(() => [...window.__nightfall.registry.get('ctr-body')].every((o) => !o.parent.visible));
+check('Isolate hides everything else', (await state(page)).isolate && ctrHidden);
+await shot(page, '06-isolated');
+await page.locator('.focus-bar').getByRole('button', { name: 'Back to aircraft' }).click();
+await settle(page, 2000);
+st = await state(page);
+const camBack = await camState(page);
+check('Back to aircraft restores the previous camera', st.focusId === null && !st.isolate && Math.hypot(...camBack.p.map((v, i) => v - camBeforeFocus.p[i])) < 0.3);
+await page.keyboard.press('Escape');
+check('Esc clears the selection', (await state(page)).selectedId === null);
+
+// Component index
+await page.locator('.tools').getByRole('button', { name: /Components/ }).click();
+await page.locator('.index-panel').getByRole('button', { name: /Nose Landing Gear/ }).click();
+await settle(page, 2000);
+check('Component index selects and locates a part', (await state(page)).selectedId === 'gear-nose');
+await shot(page, '07-index-gear');
+await page.locator('.index-panel').getByRole('button', { name: 'Close component index' }).click();
+await page.keyboard.press('Escape');
+
+// Modes
+await page.locator('.mode-index').getByRole('button', { name: /Cutaway/ }).click();
+await settle(page, 2000);
+check('Cutaway mode clips the shell', (await state(page)).cutaway === 'partial');
+await shot(page, '08-cutaway');
+const cutHit = await pickComponent(page, 'power', (id) => id === 'power');
+check('Cutaway: clicks reach modules behind the removed skin', cutHit === 'power', cutHit ?? 'none');
+await page.keyboard.press('Escape');
+await page.locator('.mode-index').getByRole('button', { name: /Systems/ }).click();
+await settle(page, 2000);
+check('Systems mode ghosts the shell', (await state(page)).cutaway === 'internal');
+const navHit = await pickComponent(page, 'nav', (id) => id === 'nav');
+check('Systems: internal modules are selectable in 3D', navHit === 'nav', navHit ?? 'none');
+await page.keyboard.press('Escape');
+await page.locator('.tools-toggle').click();
+await page.locator('#explode').fill('1');
+await settle(page, 2200);
+await shot(page, '09-exploded');
+const moved = await page.evaluate(() => [...window.__nightfall.registry.get('wing-stbd')][0].parent.position.z);
+check('Exploded view separates assemblies', moved > 1, `wing offset ${moved.toFixed(2)} m`);
+await page.locator('.mode-index').getByRole('button', { name: /Exterior/ }).click();
+await settle(page, 2200);
+const back = await page.evaluate(() => [...window.__nightfall.registry.get('wing-stbd')][0].parent.position.length());
+check('Leaving systems re-assembles the aircraft', back < 0.02 && (await state(page)).cutaway === 'exterior', `residual ${back.toFixed(3)} m`);
+if ((await page.locator('.pop').count()) === 0) await page.locator('.tools-toggle').click();
+await page.locator('#pitch').fill('20');
+await page.locator('#roll').fill('12');
+await settle(page, 1200);
+const rot = await page.evaluate(() => [...window.__nightfall.registry.get('elevon-stbd-out')][0].parent.quaternion.w);
+check('Elevon controls move the elevons', rot < 0.999, `quaternion w=${rot.toFixed(4)}`);
+await page.locator('.pop').getByRole('button', { name: /Reset viewer/ }).click();
+await settle(page, 1500);
+st = await state(page);
+check('Reset viewer restores the opening state', st.preset === 'hero' && st.pitch === 0 && st.mode === 'exterior' && st.selectedId === null, JSON.stringify({ p: st.preset, m: st.mode, s: st.selectedId }));
+
+await page.locator('.mode-index').getByRole('button', { name: /Payload/ }).click();
+await settle(page, 2600);
+st = await state(page);
+check('Payload mode opens the bay with the fitted module', st.bayOpen && st.selectedId === 'payload-map');
+await shot(page, '10-payload');
+await page.locator('.cp-list').getByRole('button', { name: /Scientific Research Rack/ }).click();
+await settle(page, 800);
+const sciVisible = await page.evaluate(() => [...window.__nightfall.registry.get('payload-sci')].every((o) => o.parent.visible));
+const mapHidden = await page.evaluate(() => [...window.__nightfall.registry.get('payload-map')].every((o) => !o.parent.visible));
+check('Swapping the mission module changes the model', (await state(page)).payloadId === 'payload-sci' && sciVisible && mapHidden);
+await page.keyboard.press('Escape');
+await page.locator('.mode-index').getByRole('button', { name: /Exterior/ }).click();
+await settle(page, 1500);
+
+// Full-screen inspection
+await page.locator('.hdr').getByRole('button', { name: /Inspect/ }).click();
+await settle(page, 1200);
+const imm = await page.evaluate(() => {
+  const c = document.querySelector('.viewport canvas').getBoundingClientRect();
+  return { on: document.querySelector('.app').classList.contains('is-immersive'), w: c.width, h: c.height, hdr: getComputedStyle(document.querySelector('.hdr')).visibility };
+});
+check('Inspection mode: canvas fills the window, header hidden', imm.on && imm.w >= 1438 && imm.h >= 898 && imm.hdr === 'hidden', `${imm.w}×${imm.h}`);
+check('Inspection mode keeps presets and the Corvane mark', (await page.locator('.presets').isVisible()) && (await page.locator('.imm-brand').isVisible()));
+await shot(page, '11-inspection');
+await presetBtn(page, 'Side').click();
+await settle(page, 2000);
+check('Presets work in inspection mode', (await state(page)).preset === 'side');
+await page.keyboard.press('Escape');
+await settle(page, 600);
+check('Esc leaves inspection mode', !(await page.evaluate(() => document.querySelector('.app').classList.contains('is-immersive'))));
+
+// Resize
+await page.setViewportSize({ width: 1024, height: 700 });
+await settle(page, 1200);
+const rs = await page.evaluate(() => document.querySelector('.viewport canvas').getBoundingClientRect().width);
+check('Canvas follows window resizing', Math.abs(rs - 1024) < 2, `${rs}px`);
+await page.setViewportSize({ width: 1440, height: 900 });
+await settle(page, 600);
+
+// Technical overview
+await page.locator('.hdr').getByRole('link', { name: 'Overview' }).click();
+await settle(page, 800);
+await shot(page, '12-overview');
 const bounds = await page.evaluate(() => {
   const reg = window.__nightfall.registry;
   const min = [Infinity, Infinity, Infinity];
   const max = [-Infinity, -Infinity, -Infinity];
-  for (const [, set] of reg)
+  for (const [id, set] of reg)
     for (const o of set) {
-      if (!o.geometry) continue;
+      if (!o.geometry || id.startsWith('payload-')) continue;
       o.updateWorldMatrix(true, false);
       o.geometry.computeBoundingBox();
       const b = o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld);
@@ -119,207 +353,41 @@ const bounds = await page.evaluate(() => {
     }
   return { L: max[0] - min[0], H: max[1] - min[1], B: max[2] - min[2] };
 });
-const specText = await page.evaluate(() => document.querySelector('.hero-specs')?.innerText ?? '');
-const nums = [...specText.matchAll(/([\d.]+) m/g)].map((m) => +m[1]);
-check('Model length matches spec (±2 %)', Math.abs(bounds.L - nums[0]) / nums[0] < 0.02, `model ${bounds.L.toFixed(2)} m vs spec ${nums[0]} m`);
-check('Model span matches spec (±2 %)', Math.abs(bounds.B - nums[1]) / nums[1] < 0.02, `model ${bounds.B.toFixed(2)} m vs spec ${nums[1]} m`);
-check('Model height matches spec (±5 %)', Math.abs(bounds.H - nums[2]) / nums[2] < 0.05, `model ${bounds.H.toFixed(2)} m vs spec ${nums[2]} m`);
-
-await page.getByRole('button', { name: 'Enter 3D viewer' }).click();
-await page.waitForTimeout(1600);
-check('Enter 3D viewer switches to Exterior tab', (await state(page)).tab === 'exterior');
-// the Display panel starts collapsed below 1400 px; open it for the control checks
-await page.locator('.tools-toggle').click();
-check('Display panel opens', (await page.locator('.vp-tools.open').count()) === 1);
-await shot(page, '02-exterior');
-
-// Camera presets
-const camPos = () => page.evaluate(() => {
-  const c = document.querySelector('canvas');
-  return c ? window.__nightfall.cam?.() : null;
-});
-void camPos;
-for (const [label, file] of [['Top', '03-top'], ['Side', '04-side'], ['Bottom', '05-bottom'], ['¾ Rear', '06-rear34'], ['Front', '07-front']]) {
-  await page.locator('.vp-presets').getByRole('button', { name: label, exact: true }).click();
-  await page.waitForTimeout(1500);
-  await shot(page, file);
-}
-check('Camera preset updates state', (await state(page)).preset === 'front');
-
-// Orbit with mouse drag (should not select anything)
-await page.locator('.vp-presets').getByRole('button', { name: '¾ Front', exact: true }).click();
-await page.waitForTimeout(1400);
-const vp = await page.locator('.viewport canvas').boundingBox();
-const cx = vp.x + vp.width / 2;
-const cy = vp.y + vp.height / 2;
-await page.mouse.move(cx - 200, cy + 150);
-await page.mouse.down();
-await page.mouse.move(cx - 60, cy + 120, { steps: 10 });
-await page.mouse.up();
-await page.waitForTimeout(400);
-check('Mouse drag orbits without selecting', (await state(page)).selectedId === null && (await state(page)).preset === 'three-quarter-front');
-await page.locator('.vp-presets').getByRole('button', { name: '¾ Front', exact: true }).click();
-await page.waitForTimeout(1400);
-
-// Zoom with wheel
-await page.mouse.move(cx, cy);
-await page.mouse.wheel(0, -600);
-await page.waitForTimeout(600);
-await shot(page, '08-zoomed');
-await page.getByRole('button', { name: 'Reset camera' }).click();
-await page.waitForTimeout(1400);
-
-// Click-select on the actual geometry (scan the viewport until a hit)
-let picked = null;
-for (const [dx, dy] of [[0, 0], [40, 20], [-60, 10], [80, -20], [-120, 40], [140, 30], [0, 60], [200, 60]]) {
-  await page.mouse.click(cx + dx, cy + dy);
-  await page.waitForTimeout(250);
-  picked = (await state(page)).selectedId;
-  if (picked) break;
-}
-check('Clicking the model selects a real component', !!picked, picked ?? 'no hit');
-await page.waitForTimeout(1300);
-const title = await page.locator('.insp .insp-title').innerText();
-check('Inspector shows the selected component', title.length > 3 && title !== 'No component selected', title);
-await shot(page, '09-selected');
-
-// Wing → enlarge → pick subcomponent via tree
-await page.locator('.side').getByRole('button', { name: /Starboard Outer Wing/ }).click();
-await page.waitForTimeout(1300);
-await page.locator('.insp').getByRole('button', { name: 'Enlarge' }).click();
-await page.waitForTimeout(1400);
-let st = await state(page);
-check('Enlarge enters detail mode for the wing', st.focusId === 'wing-stbd');
-await shot(page, '10-wing-detail');
-// clicking the elevon geometry inside the enlarged wing selects the elevon itself
-const sub = await pickComponent(page, 'elevon-stbd-out', (id) => id === 'elevon-stbd-out');
-check('Sub-components are pickable inside detail mode', sub === 'elevon-stbd-out', sub ?? 'none');
-await page.waitForTimeout(1200);
-await shot(page, '10b-elevon-selected');
-await page.locator('.focus-bar').getByRole('button', { name: 'Isolate' }).click();
-await page.waitForTimeout(1300);
-check('Isolate hides the rest of the aircraft', (await state(page)).isolate === true);
-await shot(page, '11-isolated');
-await page.locator('.focus-bar').getByRole('button', { name: 'Return to aircraft' }).click();
-await page.waitForTimeout(1400);
+const dims = (await page.locator('.kv.big dd').allInnerTexts()).map((t) => parseFloat(t.replace('≈', '')));
+check('Overview length matches the model (±2 %)', Math.abs(bounds.L - dims[0]) / dims[0] < 0.02, `model ${bounds.L.toFixed(2)} vs ${dims[0]}`);
+check('Overview span matches the model (±2 %)', Math.abs(bounds.B - dims[1]) / dims[1] < 0.02, `model ${bounds.B.toFixed(2)} vs ${dims[1]}`);
+check('Overview height matches the model (±5 %)', Math.abs(bounds.H - dims[2]) / dims[2] < 0.05, `model ${bounds.H.toFixed(2)} vs ${dims[2]}`);
+const na = await page.locator('ul.na li').allInnerTexts();
+check('Performance figures are marked not established, none invented', na.length >= 6 && na.every((t) => /—\s*$/.test(t.trim())));
+await page.locator('ol.features li').filter({ hasText: 'Dorsal propulsion fairing' }).getByRole('button', { name: /Show in 3D/ }).click();
+await settle(page, 2200);
 st = await state(page);
-check('Return to aircraft leaves detail mode', st.focusId === null && st.isolate === false);
-
-// Landing gear subparts
-await page.locator('.side').getByRole('button', { name: /Nose Landing Gear/ }).click();
-await page.waitForTimeout(400);
-await page.locator('.insp').getByRole('button', { name: 'Enlarge' }).click();
-await page.waitForTimeout(1500);
-await shot(page, '12-gear-detail');
-await page.locator('.focus-bar').getByRole('button', { name: 'Return to aircraft' }).click();
-await page.waitForTimeout(800);
-
-// Cutaway modes
-await page.locator('.vp-tools').getByRole('button', { name: 'Partial' }).click();
-await page.locator('.vp-presets').getByRole('button', { name: 'Internal', exact: true }).click();
-await page.waitForTimeout(1500);
-await shot(page, '13-partial');
-check('Partial cutaway active', (await state(page)).cutaway === 'partial');
-await page.locator('.vp-tools').getByRole('button', { name: 'Internal' }).click();
-await page.waitForTimeout(800);
-await shot(page, '14-internal');
-await page.locator('.side').getByRole('button', { name: /Autonomous Flight-Computing/ }).click();
-await page.waitForTimeout(1500);
-await shot(page, '15-afcm');
-check('Internal module selectable from systems list', (await state(page)).selectedId === 'afcm');
-check('AFCM shows architecture diagram', (await page.locator('.insp svg.diagram').count()) === 1);
-
-// Click an internal module in 3D while in internal view
-await page.locator('.vp-presets').getByRole('button', { name: 'Internal', exact: true }).click();
-await page.waitForTimeout(1500);
-const toggleDisplay = () => page.locator('.tools-toggle').click();
-await toggleDisplay(); // collapse the Display panel so it does not cover the modules
-const internalHit = await pickComponent(page, 'nav', (id) => id === 'nav');
-await toggleDisplay();
-check('Clicking inside internal view selects an internal module', internalHit === 'nav', internalHit ?? 'none');
-// In partial cutaway, clicks pass through the removed shell to the modules behind it
-await page.locator('.vp-tools').getByRole('button', { name: 'Partial' }).click();
-await page.locator('.vp-presets').getByRole('button', { name: 'Internal', exact: true }).click();
-await page.waitForTimeout(1500);
-await toggleDisplay();
-const cutHit = await pickComponent(page, 'power', (id) => id === 'power');
-await toggleDisplay();
-check('Partial cutaway: clicks reach modules behind the removed shell', cutHit === 'power', cutHit ?? 'none');
-
-// Exploded view
-await page.locator('.vp-tools').getByRole('button', { name: 'Exterior' }).click();
-await page.locator('#explode').fill('1');
-await page.locator('.vp-presets').getByRole('button', { name: '¾ Front', exact: true }).click();
-await page.waitForTimeout(2200);
-await shot(page, '16-exploded');
-check('Explode slider drives explode state', (await state(page)).explode === 1);
-const moved = await page.evaluate(() => {
-  const set = window.__nightfall.registry.get('wing-stbd');
-  const o = [...set][0];
-  return o.parent.position.z;
-});
-check('Exploded view physically moves components', moved > 1, `starboard wing offset z=${moved.toFixed(2)} m`);
-// Repeated toggling
-for (let i = 0; i < 8; i++) {
-  await page.locator('#explode').fill(i % 2 ? '0' : '0.7');
-  await page.locator('.vp-tools').getByRole('button', { name: ['Exterior', 'Partial', 'Internal'][i % 3] }).click();
-}
-await page.getByRole('button', { name: 'Reset all' }).click();
-await page.waitForTimeout(2200);
-st = await state(page);
-const back = await page.evaluate(() => [...window.__nightfall.registry.get('wing-stbd')][0].parent.position.length());
-check('Reset all restores initial viewer state', st.explode === 0 && st.cutaway === 'exterior' && st.selectedId === null && back < 0.02, `residual offset ${back.toFixed(3)} m`);
-
-// Control surfaces
-await page.locator('#pitch').fill('20');
-await page.locator('#roll').fill('12');
-await page.locator('.vp-presets').getByRole('button', { name: '¾ Rear', exact: true }).click();
-await page.waitForTimeout(1800);
-await shot(page, '17-elevons');
-const rot = await page.evaluate(() => [...window.__nightfall.registry.get('elevon-stbd-out')][0].parent.quaternion.w);
-check('Elevon sliders rotate the elevons', rot < 0.999, `quaternion w=${rot.toFixed(4)}`);
-await page.locator('#pitch').fill('0');
-await page.locator('#roll').fill('0');
-
-// Equipment bay
-await page.getByRole('tab', { name: 'Equipment bay' }).click();
-await page.waitForTimeout(2600);
-st = await state(page);
-check('Equipment bay tab opens doors and focuses bay', st.bayOpen && st.selectedId === 'bay');
-await shot(page, '18-bay');
-await page.locator('.side').getByRole('button', { name: /Scientific Research Rack/ }).first().click();
-await page.waitForTimeout(1500);
-st = await state(page);
-const sciVisible = await page.evaluate(() => [...window.__nightfall.registry.get('payload-sci')].every((o) => o.parent.visible));
-const mapHidden = await page.evaluate(() => [...window.__nightfall.registry.get('payload-map')].every((o) => !o.parent.visible));
-check('Switching equipment module changes the model', st.payloadId === 'payload-sci' && sciVisible && mapHidden);
-await shot(page, '19-bay-sci');
+check('“Show in 3D” opens the viewer on that part', st.tab === 'aircraft' && st.selectedId === 'fairing');
+await shot(page, '13-show-in-3d');
 
 // Autonomy
-await page.getByRole('tab', { name: 'Autonomy' }).click();
-await page.waitForTimeout(800);
+await page.locator('.hdr').getByRole('link', { name: 'Autonomy' }).click();
+await settle(page, 800);
 await page.locator('.arch .node').nth(3).click();
 await page.getByRole('button', { name: /Simulated mission abort/ }).click();
 await page.waitForTimeout(3200);
-await shot(page, '20-autonomy');
+await shot(page, '14-autonomy');
 const authVisible = await page.getByRole('button', { name: 'Authorise abort' }).isVisible();
 check('Abort scenario asks for human authorisation', authVisible);
 if (authVisible) await page.getByRole('button', { name: 'Authorise abort' }).click();
 await page.waitForTimeout(500);
-const logText = await page.locator('.log').innerText();
-check('Authorisation is written to the audit log', /terminated safely/.test(logText));
-check('Status bar reflects scenario', /SIM SIMULATED MISSION ABORT/.test(await page.locator('.status').innerText()));
+check('Authorisation is written to the audit log', /terminated safely/.test(await page.locator('.log').innerText()));
 
-// Specs
-await page.getByRole('tab', { name: 'Specifications' }).click();
+// Specification
+await page.locator('.hdr').getByRole('link', { name: 'Specification' }).click();
 await page.waitForTimeout(600);
-await shot(page, '21-specs');
+await shot(page, '15-specs');
 await page.locator('.spec-tabs').getByRole('tab', { name: 'Propulsion' }).click();
 check('Specification tabs filter categories', (await page.locator('.doc table').count()) === 1);
 check('Three-view drawings render', (await page.locator('svg.drawing').count()) === 3);
 
 // Research
-await page.getByRole('tab', { name: 'Research library' }).click();
+await page.locator('.hdr').getByRole('link', { name: 'Research' }).click();
 await page.waitForTimeout(400);
 const all = await page.locator('.research-card').count();
 await page.locator('.filters').getByRole('button', { name: 'Stealth bomber' }).click();
@@ -330,42 +398,64 @@ check('Empty research result handled', (await page.getByText('No references matc
 await page.getByRole('button', { name: 'Clear filters' }).click();
 const links = await page.locator('.research-card .sources a').evaluateAll((as) => as.map((a) => a.href));
 check('Every research card has https source links', links.length >= 20 && links.every((h) => h.startsWith('https://')), `${links.length} links`);
-await shot(page, '22-research');
+await shot(page, '16-research');
+await page.close();
 
-// Back to viewer keeps context
-await page.getByRole('tab', { name: 'Exterior' }).click();
-await page.waitForTimeout(1200);
-check('Returning to viewer keeps fitted module', (await state(page)).payloadId === 'payload-sci');
+/* ---------------- Phone (touch) ---------------- */
+const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 1 });
+const m = await ctx.newPage();
+m.on('console', (msg) => msg.type() === 'error' && errors.push(msg.text()));
+m.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
+await m.goto(URL);
+await m.waitForFunction(() => window.__nightfall?.store?.getState().renderStatus === 'ready', null, { timeout: 60000 });
+await settle(m, 2500);
+await shot(m, '30-phone-hero');
+check('Phone: no horizontal page scroll', !(await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)));
+r = await aircraftRect(m);
+check('Phone: whole aircraft visible above the caption', r.x0 > -2 && r.x1 < r.w + 2 && r.y0 > 0, `x ${Math.round(r.x0)}–${Math.round(r.x1)} of ${r.w}`);
+check('Phone: brand and NIGHTFALL visible', (await m.locator('.hdr .brand').isVisible()) && (await m.locator('.nf-title').isVisible()));
+const cdp = await ctx.newCDPSession(m);
+const box = await m.locator('.viewport canvas').boundingBox();
+const tx = box.x + box.width / 2;
+const ty = box.y + box.height * 0.35;
+const c0 = await camState(m);
+await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: tx, y: ty }] });
+for (let i = 1; i <= 10; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: tx + i * 12, y: ty }] });
+await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+await settle(m, 900);
+const c1 = await camState(m);
+check('Phone: one-finger drag orbits', Math.hypot(...c1.p.map((v, i) => v - c0.p[i])) > 1);
+await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: tx - 30, y: ty, id: 1 }, { x: tx + 30, y: ty, id: 2 }] });
+for (let i = 1; i <= 10; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: tx - 30 - i * 9, y: ty, id: 1 }, { x: tx + 30 + i * 9, y: ty, id: 2 }] });
+await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+await settle(m, 900);
+const c2 = await camState(m);
+check('Phone: pinch zooms in', c2.d < c1.d - 0.5, `${c1.d.toFixed(1)} → ${c2.d.toFixed(1)} m`);
+await m.locator('.presets').getByRole('button', { name: 'Hero', exact: true }).tap();
+await settle(m, 2000);
+const mp = await pickComponent(m, 'ctr-body', (id) => !!id);
+check('Phone: tapping the model selects a part', !!mp, mp ?? 'none');
+await settle(m, 900);
+check('Phone: selection opens the bottom sheet', (await m.locator('.cp-wrap.open .cp-title').count()) === 1);
+await shot(m, '31-phone-selected');
+await m.locator('.cp').getByRole('button', { name: 'Clear selection' }).tap();
+await m.locator('.menu-btn').tap();
+check('Phone: menu shows all sections', (await m.locator('.hdr-nav.open .hdr-link').count()) === 5);
+await shot(m, '32-phone-menu');
+await m.locator('.hdr-nav').getByRole('link', { name: 'Overview' }).tap();
+await settle(m, 800);
+check('Phone: overview readable without horizontal scroll', !(await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)));
+await shot(m, '33-phone-overview');
+await ctx.close();
 
-await page.close(); // free the WebGL context before the next viewport
-
-/* ---------------- Mobile ---------------- */
-const m = await newPage({ width: 390, height: 844 });
-await m.goto(URL + '#exterior');
-await m.waitForFunction(() => window.__nightfall?.store?.getState().renderStatus === 'ready', null, { timeout: 30000 });
-await m.waitForTimeout(2500);
-await shot(m, '30-mobile-exterior');
-const overflow = await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-check('Mobile: no horizontal page scroll', !overflow);
-await m.getByRole('button', { name: 'Systems' }).click();
-await m.waitForTimeout(500);
-await shot(m, '31-mobile-systems');
-await m.locator('.side').getByRole('button', { name: /Centre Body/ }).click();
-await m.waitForTimeout(1500);
-check('Mobile: selecting opens inspection sheet', await m.locator('.insp.open').count() === 1);
-await shot(m, '32-mobile-inspector');
-await m.goto(URL + '#overview');
-await m.waitForTimeout(2500);
-await shot(m, '33-mobile-overview');
-await m.goto(URL + '#autonomy');
-await m.waitForTimeout(800);
-await shot(m, '34-mobile-autonomy');
-await m.close();
 const t = await newPage({ width: 820, height: 1180 });
-await t.goto(URL + '#cutaway');
-await t.waitForFunction(() => window.__nightfall?.store?.getState().renderStatus === 'ready', null, { timeout: 30000 });
-await t.waitForTimeout(2500);
-await shot(t, '35-tablet-cutaway');
+await t.goto(URL);
+await t.waitForFunction(() => window.__nightfall?.store?.getState().renderStatus === 'ready', null, { timeout: 60000 });
+await settle(t, 2500);
+await shot(t, '35-tablet');
+r = await aircraftRect(t);
+check('Tablet: aircraft uncropped', r.x0 > -2 && r.x1 < r.w + 2 && r.y0 > 0 && r.y1 < r.h, `x ${Math.round(r.x0)}–${Math.round(r.x1)}`);
+await t.close();
 
 const relevant = errors.filter((e) => !/GPU stall|ReadPixels|WebGL-|swiftshader|Automatic fallback/i.test(e));
 check('No console errors', relevant.length === 0, relevant.slice(0, 5).join(' | '));
@@ -377,13 +467,12 @@ const noGl = await playwright.chromium.launch({ args: ['--disable-3d-apis', '--d
 const ng = await noGl.newPage({ viewport: { width: 1280, height: 800 } });
 const ngErrors = [];
 ng.on('pageerror', (e) => ngErrors.push(e.message));
-await ng.goto(URL + '#exterior');
+await ng.goto(URL);
 await ng.waitForTimeout(2500);
 check('WebGL missing: helpful fallback is shown', (await ng.getByText('WebGL could not start').count()) === 1);
-check('WebGL missing: status bar reports it', /UNAVAILABLE/.test(await ng.locator('.status').innerText()));
-await ng.getByRole('tab', { name: 'Specifications' }).click();
-check('WebGL missing: other sections still work', (await ng.locator('.doc svg.drawing').count()) >= 3 && ngErrors.length === 0, ngErrors.join(' | '));
 await ng.screenshot({ path: `${OUT}/40-no-webgl.png` });
+await ng.locator('.hdr').getByRole('link', { name: 'Specification' }).click();
+check('WebGL missing: other sections still work', (await ng.locator('.doc svg.drawing').count()) >= 3 && ngErrors.length === 0, ngErrors.join(' | '));
 await noGl.close();
 
 const failed = results.filter((r) => !r.ok);

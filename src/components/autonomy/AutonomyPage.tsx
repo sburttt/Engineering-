@@ -187,8 +187,8 @@ export function AutonomyPage() {
             <h2 style={{ fontSize: 17 }}>{layer.name}</h2>
             <p className="text-2">{layer.detail}</p>
             <p className="note">Click any layer in the diagram. Amber outlines show the layers involved in the running simulation.</p>
-            <button className="btn" style={{ justifySelf: 'start' }} onClick={() => (setTab('internal'), select('afcm'))}>
-              Show the flight-computing module in 3D
+            <button className="txt-btn" style={{ justifySelf: 'start' }} onClick={() => (setTab('aircraft'), requestAnimationFrame(() => select('afcm', { fly: true })))}>
+              Show the flight-computing module in 3D →
             </button>
           </div>
         </section>

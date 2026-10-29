@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../../state/store';
 import { COMPONENTS, GROUP_LABELS, chainOf, childrenOf, type ComponentGroup, type ComponentRecord } from '../../data/components';
-import { EQUIPMENT_MODULES } from '../../data/equipmentModules';
+import { Icon } from '../viewer/Icon';
 
 const GROUP_ORDER: ComponentGroup[] = ['exterior', 'interior', 'autonomy', 'equipment', 'maintenance'];
 
@@ -15,12 +15,12 @@ function Item({ c, child }: { c: ComponentRecord; child?: boolean }) {
     <button
       className={`tree-item ${child ? 'child' : ''} ${c.location === 'internal' ? 'int' : ''}`}
       aria-current={current}
-      onClick={() => select(c.id)}
+      onClick={() => select(c.id, { fly: true })}
       title={c.short}
     >
       <span className="tree-mark" aria-hidden />
       <span>{c.name}</span>
-      <small>{isPayload ? (payloadId === c.id ? 'FITTED' : '') : c.location === 'internal' ? 'INT' : 'EXT'}</small>
+      <small>{isPayload ? (payloadId === c.id ? 'Fitted' : '') : c.location === 'internal' ? 'Int' : 'Ext'}</small>
     </button>
   );
 }
@@ -29,9 +29,7 @@ export function SystemsTree() {
   const [q, setQ] = useState('');
   const selected = useStore((s) => s.selectedId);
   const focus = useStore((s) => s.focusId);
-  const tab = useStore((s) => s.tab);
-  const setPayload = useStore((s) => s.setPayload);
-  const payloadId = useStore((s) => s.payloadId);
+  const setPanel = useStore((s) => s.setPanel);
   const open = new Set([...(selected ? chainOf(selected) : []), ...(focus ? chainOf(focus) : [])]);
 
   const filtered = useMemo(() => {
@@ -43,22 +41,12 @@ export function SystemsTree() {
   return (
     <>
       <div className="panel-head">
-        <span className="eyebrow">Aircraft systems</span>
-        <span className="eyebrow">{COMPONENTS.length} items</span>
+        <span className="eyebrow">Components · {COMPONENTS.length}</span>
+        <button className="icon-btn" onClick={() => setPanel('none')} aria-label="Close component index">
+          <Icon name="close" />
+        </button>
       </div>
       <div className="panel-body">
-        {tab === 'bay' && (
-          <div className="tree-group">
-            <span className="eyebrow">Fitted equipment module</span>
-            {EQUIPMENT_MODULES.map((m) => (
-              <button key={m.id} className="tree-item" aria-current={payloadId === m.id} onClick={() => setPayload(m.id)}>
-                <span className="tree-mark" aria-hidden />
-                <span>{m.name}</span>
-                <small>{payloadId === m.id ? 'FITTED' : ''}</small>
-              </button>
-            ))}
-          </div>
-        )}
         <label className="sr-only" htmlFor="tree-search">Filter components</label>
         <input id="tree-search" className="tree-search" placeholder="Filter components…" value={q} onChange={(e) => setQ(e.target.value)} />
         {filtered ? (

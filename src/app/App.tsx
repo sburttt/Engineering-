@@ -1,16 +1,14 @@
-import { Component, Suspense, lazy, useEffect, useRef, useState, type ReactNode } from 'react';
-import { useStore, TAB_ORDER, VIEWER_TABS, type Tab } from '../state/store';
-import { TopNav } from '../components/layout/TopNav';
-import { StatusBar } from '../components/layout/StatusBar';
+import { Component, Suspense, lazy, useEffect, useState, type ReactNode } from 'react';
+import { useStore, parseHash } from '../state/store';
+import { Header } from '../components/layout/Header';
 import { SystemsTree } from '../components/layout/SystemsTree';
 import { Inspector } from '../components/inspection/Inspector';
-import { ViewportUI } from '../components/controls/ViewportUI';
-import { Overview } from '../components/overview/Overview';
+import { ViewerChrome } from '../components/viewer/ViewerChrome';
+import { TechnicalOverview } from '../components/overview/TechnicalOverview';
 import { SpecsPage } from '../components/specifications/SpecsPage';
 import { ResearchPage } from '../components/research/ResearchPage';
 import { AutonomyPage } from '../components/autonomy/AutonomyPage';
 import { TopView, SideView } from '../components/specifications/ThreeView';
-import { Emblem } from '../components/brand/Logo';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 
 const AircraftScene = lazy(() => import('../aircraft/AircraftScene'));
@@ -32,13 +30,19 @@ function Fallback({ reason }: { reason: string }) {
           <span className="eyebrow">3D viewer unavailable</span>
           <h1>WebGL could not start</h1>
           <p>
-            {reason} The rest of the presentation still works: the specification sheet, research library and autonomy pages do not
-            need 3D. Try a recent version of Chrome, Edge, Firefox or Safari with hardware acceleration turned on.
+            {reason} The rest of the site works without 3D: the overview, specification, research and autonomy pages. Try a recent
+            version of Chrome, Edge, Firefox or Safari with hardware acceleration turned on.
           </p>
         </div>
-        <div className="grid-2">
-          <div className="card"><TopView /></div>
-          <div className="card"><SideView /></div>
+        <div className="drawings">
+          <figure>
+            <TopView />
+            <figcaption>Plan view, nose up</figcaption>
+          </figure>
+          <figure>
+            <SideView />
+            <figcaption>Profile on the centreline</figcaption>
+          </figure>
         </div>
       </div>
     </div>
@@ -60,61 +64,77 @@ class SceneBoundary extends Component<{ children: ReactNode }, { error: string |
 
 function useHashRouting() {
   const tab = useStore((s) => s.tab);
-  const setTab = useStore((s) => s.setTab);
+  const mode = useStore((s) => s.mode);
   useEffect(() => {
     const read = () => {
-      const h = location.hash.replace('#', '') as Tab;
-      if (TAB_ORDER.includes(h)) setTab(h);
+      const r = parseHash(location.hash);
+      if (!r) return;
+      const s = useStore.getState();
+      s.setTab(r.tab);
+      if (r.mode) s.setMode(r.mode);
     };
     window.addEventListener('hashchange', read);
     return () => window.removeEventListener('hashchange', read);
-  }, [setTab]);
+  }, []);
   useEffect(() => {
+    const h = '#' + tab;
     try {
-      if (location.hash !== '#' + tab) history.replaceState(null, '', '#' + tab);
+      if (location.hash !== h) history.replaceState(null, '', h);
     } catch {
       /* sandboxed frames may refuse history access */
     }
-  }, [tab]);
+  }, [tab, mode]);
+}
+
+/** Full-screen inspection: also ask the browser for real full screen where it is allowed. */
+function useFullscreenSync() {
+  const immersive = useStore((s) => s.immersive);
+  useEffect(() => {
+    const el = document.documentElement;
+    try {
+      if (immersive && !document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      if (!immersive && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    } catch {
+      /* embedded frames may not allow full screen; the in-page mode still works */
+    }
+  }, [immersive]);
+  useEffect(() => {
+    const onChange = () => {
+      if (!document.fullscreenElement && useStore.getState().immersive) useStore.getState().setImmersive(false);
+    };
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
 }
 
 export default function App() {
   const tab = useStore((s) => s.tab);
-  const drawer = useStore((s) => s.drawer);
+  const panel = useStore((s) => s.panel);
   const status = useStore((s) => s.renderStatus);
-  const selectedId = useStore((s) => s.selectedId);
+  const immersive = useStore((s) => s.immersive);
+  const selected = useStore((s) => s.selectedId);
   const [gl] = useState(webglAvailable);
   useHashRouting();
   useKeyboardShortcuts();
+  useFullscreenSync();
 
   useEffect(() => {
     if (!gl) useStore.getState().setRenderStatus('unavailable');
   }, [gl]);
 
-  // On narrow screens, open the inspection sheet when something is selected.
-  const prevSel = useRef<string | null>(null);
-  useEffect(() => {
-    if (selectedId && selectedId !== prevSel.current && window.matchMedia('(max-width: 900px)').matches) useStore.getState().setDrawer('inspector');
-    prevSel.current = selectedId;
-  }, [selectedId]);
-
-  const viewerTab = VIEWER_TABS.includes(tab);
-  const showScene = viewerTab || tab === 'overview';
+  const showScene = tab === 'aircraft';
 
   const onDoubleClick = () => {
     const s = useStore.getState();
-    if (s.hoveredId) s.enlarge(s.hoveredId);
+    if (s.hoveredId) s.focus(s.hoveredId);
     else s.resetView();
   };
 
   return (
-    <div className={`app mode-${tab}`}>
-      <TopNav />
+    <div className={`app tab-${tab} ${immersive ? 'is-immersive' : ''} ${selected ? 'has-sel' : ''}`}>
+      <Header />
       <main className="main">
-        <div className={`viewer-grid ${showScene ? '' : 'hidden'}`} aria-hidden={!showScene}>
-          <aside className={`side ${drawer === 'systems' ? 'open' : ''}`} aria-label="Aircraft systems">
-            <SystemsTree />
-          </aside>
+        <div className={`stage ${showScene ? '' : 'hidden'}`} aria-hidden={!showScene}>
           <div className="viewport" onDoubleClick={onDoubleClick}>
             {gl ? (
               <SceneBoundary>
@@ -127,25 +147,24 @@ export default function App() {
             )}
             {gl && (
               <div className={`loading ${status !== 'loading' ? 'done' : ''}`} aria-hidden={status !== 'loading'}>
-                <div style={{ display: 'grid', justifyItems: 'center', color: 'var(--fg-2)' }}>
-                  <Emblem size={40} />
-                  <span className="eyebrow" style={{ marginTop: 12 }}>Generating CX-7 geometry</span>
-                  <div className="bar" />
-                </div>
+                <span className="eyebrow">Building the airframe</span>
+                <div className="bar" />
               </div>
             )}
-            {viewerTab && gl && <ViewportUI />}
-            {tab === 'overview' && <Overview />}
+            {gl && status !== 'unavailable' && <ViewerChrome />}
           </div>
-          <aside className={`insp ${drawer === 'inspector' ? 'open' : ''}`} aria-label="Component inspection">
+          <aside className={`index-panel ${panel === 'index' ? 'open' : ''}`} aria-label="Component index" inert={panel !== 'index'}>
+            <SystemsTree />
+          </aside>
+          <aside className={`cp-wrap ${selected ? 'open' : ''}`} aria-label="Component information">
             <Inspector />
           </aside>
         </div>
+        {tab === 'overview' && <TechnicalOverview />}
         {tab === 'specs' && <SpecsPage />}
         {tab === 'research' && <ResearchPage />}
         {tab === 'autonomy' && <AutonomyPage />}
       </main>
-      <StatusBar />
     </div>
   );
 }

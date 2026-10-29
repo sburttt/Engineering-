@@ -16,23 +16,34 @@
 
 export type Vec2 = [number, number];
 
-/** Leading edge as [z, x] pairs (half-span → chordwise station). */
-export const LE_PTS: Vec2[] = [
-  [0, 7.4],
-  [0.3, 6.75],
-  [0.65, 5.75],
-  [1.2, 4.0],
-  [2.3, 1.3],
-  [8.4, -3.85],
-];
+/**
+ * Nose planform: an ogive z = NOSE_HALF·((NOSE_X − x)/NOSE_LEN)^0.836 that reproduces the original
+ * CX-7 chine points (0.3 m at X 6.75, 0.65 m at X 5.75, 1.2 m at X 4.0) but with a smooth, slightly
+ * blunted tip instead of a polyline needle.
+ */
+const NOSE_HALF = 1.2;
+const NOSE_LEN = 3.4;
+const NOSE_P = 0.836;
+const nosePts: Vec2[] = [];
+for (let i = 0; i <= 28; i++) {
+  const z = NOSE_HALF * Math.pow(i / 28, 1.35);
+  nosePts.push([z, 7.4 - NOSE_LEN * Math.pow(z / NOSE_HALF, 1 / NOSE_P)]);
+}
 
-/** Trailing edge as [z, x] pairs. The flat centre segment carries the slot exhaust. */
+/** Leading edge as [z, x] pairs (half-span → chordwise station). */
+export const LE_PTS: Vec2[] = [...nosePts, [2.3, 1.3], [8.4, -3.85]];
+
+/**
+ * Trailing edge as [z, x] pairs. The flat centre segment carries the slot exhaust.
+ * The two outboard sawtooth segments are parallel (≈20° sweep) so the edges read as one
+ * coordinated family rather than independent angles.
+ */
 export const TE_PTS: Vec2[] = [
   [0, -6.8],
   [0.95, -6.8],
   [2.7, -4.7],
-  [5.3, -5.7],
-  [8.4, -4.6],
+  [5.3, -5.65],
+  [8.4, -4.52],
 ];
 
 export const NOSE_X = 7.4;
@@ -63,7 +74,11 @@ function interp(pts: Vec2[], z: number): number {
   return pts[pts.length - 1][1];
 }
 
-export const xLE = (z: number) => interp(LE_PTS, z);
+/** Leading edge: the nose ogive is evaluated exactly (a polyline would print faint bands into the shading). */
+export const xLE = (z: number) => {
+  const az = Math.abs(z);
+  return az < NOSE_HALF ? 7.4 - NOSE_LEN * Math.pow(az / NOSE_HALF, 1 / NOSE_P) : interp(LE_PTS, az);
+};
 export const xTE = (z: number) => interp(TE_PTS, z);
 export const chord = (z: number) => Math.max(1e-6, xLE(z) - xTE(z));
 
@@ -87,6 +102,7 @@ const EDGE_DX = 0.005;
   }
 })();
 export function zEdgeInner(x: number): number {
+  if (x >= 7.4 - NOSE_LEN) return NOSE_HALF * Math.pow(Math.max(0, 7.4 - x) / NOSE_LEN, NOSE_P);
   const f = (clamp(x, TAIL_X, NOSE_X) - EDGE_X0) / EDGE_DX;
   const i = Math.floor(f);
   const a = EDGE_TABLE[Math.min(i, EDGE_TABLE.length - 1)];
@@ -112,14 +128,14 @@ const p = (x: number) => clamp((NOSE_X - x) / (NOSE_X - TAIL_X));
 /** Dorsal centre-body profile (added on top of the wing section). */
 export function bodyUpper(x: number): number {
   const q = p(x);
-  if (q < 0.42) return 0.68 * Math.pow(Math.sin((Math.PI / 2) * (q / 0.42)), 0.9);
-  return 0.68 - 0.46 * smoothstep(0.42, 1, q);
+  if (q < 0.42) return 0.74 * Math.pow(Math.sin((Math.PI / 2) * (q / 0.42)), 0.78);
+  return 0.74 - 0.52 * smoothstep(0.42, 1, q);
 }
 /** Ventral centre-body depth (positive number, subtracted). */
 export function bodyLower(x: number): number {
   const q = p(x);
-  if (q < 0.35) return 0.4 * Math.pow(Math.sin((Math.PI / 2) * (q / 0.35)), 0.7);
-  return 0.4 - 0.26 * smoothstep(0.35, 1, q);
+  if (q < 0.35) return 0.44 * Math.pow(Math.sin((Math.PI / 2) * (q / 0.35)), 0.66);
+  return 0.44 - 0.3 * smoothstep(0.35, 1, q);
 }
 /** Centre-body half width before it is limited by the planform edge. */
 export const bodyWidth = (x: number) => (x >= -1 ? 1.65 : lerp(0.98, 1.65, smoothstep(-6.8, -1, x)));
@@ -151,13 +167,16 @@ function bodyCross(x: number, z: number, exp: number) {
   return Math.pow(1 - t * t, exp);
 }
 
+/** Gentle nose droop of the whole forward section (chine line included), ≈ 0.13 m at the tip. */
+export const camber = (x: number) => -0.13 * Math.pow(smoothstep(3.2, NOSE_X, x), 1.6);
+
 /** Upper outer-mould-line height at plan position (x, z). */
 export function hUp(x: number, z: number): number {
   const s = sOf(x, z);
   const A = af(s);
   const wing = 0.56 * wingThickness(z) * A;
   const body = bodyUpper(x) * bodyCross(x, z, 1.6) * teFade(x, z);
-  return wing + body + droop(z);
+  return wing + body + droop(z) + camber(x);
 }
 
 /** Lower outer-mould-line height at plan position (x, z). */
@@ -166,7 +185,34 @@ export function hLo(x: number, z: number): number {
   const A = af(s);
   const wing = -0.44 * wingThickness(z) * A;
   const body = -bodyLower(x) * bodyCross(x, z, 0.85) * teFade(x, z);
-  return wing + body + droop(z);
+  return wing + body + droop(z) + camber(x);
+}
+
+/**
+ * Analytic outward normal of the upper or lower mould line. Every surface patch uses this instead
+ * of per-patch vertex normals, so neighbouring patches shade as one continuous surface.
+ */
+export function mouldNormal(x: number, z: number, surf: 'up' | 'lo', out: [number, number, number] = [0, 1, 0]) {
+  const h = surf === 'up' ? hUp : hLo;
+  const e = 0.006;
+  // On the very edge (chine, leading and trailing edges) sample a few centimetres inboard, so the
+  // edge shades as a smooth continuation of the surface instead of sparkling.
+  const ok = (a: number, b: number) =>
+    insidePlanform(a + e, b) && insidePlanform(a - e, b) && insidePlanform(a, b + e) && insidePlanform(a, b - e);
+  for (let i = 0; i < 6 && !ok(x, z); i++) {
+    const az = Math.max(0, Math.abs(z) - 0.012);
+    z = Math.sign(z) * az;
+    const xm = (xLE(az) + xTE(az)) / 2;
+    x += Math.sign(xm - x) * Math.min(0.012, Math.abs(xm - x));
+  }
+  const dx = Math.max(-25, Math.min(25, (h(x + e, z) - h(x - e, z)) / (2 * e)));
+  const dz = Math.max(-25, Math.min(25, (h(x, z + e) - h(x, z - e)) / (2 * e)));
+  const sg = surf === 'up' ? 1 : -1;
+  const l = Math.hypot(dx, 1, dz);
+  out[0] = (-dx * sg) / l;
+  out[1] = sg / l;
+  out[2] = (-dz * sg) / l;
+  return out;
 }
 
 /* ---------------- Dorsal propulsion fairing (engine housing + inlet) ---------------- */

@@ -1,32 +1,31 @@
 import { create } from 'zustand';
+import { COMPONENT_MAP } from '../data/components';
 
-export type Tab = 'overview' | 'exterior' | 'cutaway' | 'internal' | 'autonomy' | 'bay' | 'specs' | 'research';
+/** Pages. The aircraft viewer is the home page; the others are editorial documents. */
+export type Tab = 'aircraft' | 'overview' | 'autonomy' | 'specs' | 'research';
+/** What the viewer shows: the closed aircraft, a partial cutaway, the internal systems, or the open payload bay. */
+export type ViewMode = 'exterior' | 'cutaway' | 'systems' | 'payload';
 export type Cutaway = 'exterior' | 'partial' | 'internal';
-export type PresetId =
-  | 'three-quarter-front'
-  | 'front'
-  | 'side'
-  | 'rear'
-  | 'top'
-  | 'bottom'
-  | 'three-quarter-rear'
-  | 'internal'
-  | 'overview';
+export type PresetId = 'hero' | 'front' | 'side' | 'top' | 'rear' | 'under' | 'internal';
 export type ScenarioId = 'nominal' | 'lost-link' | 'sensor-mismatch' | 'health-warning' | 'abort';
 
 export type CameraRequest =
   | { kind: 'preset'; id: PresetId; nonce: number }
-  | { kind: 'fit'; id: string; mode: 'enlarge' | 'sub' | 'normal'; nonce: number }
+  /** focus: close inspection (saves the current view first) · locate: gentle move to show where a part is */
+  | { kind: 'fit'; id: string; mode: 'focus' | 'locate'; nonce: number }
+  | { kind: 'restore'; nonce: number }
   | { kind: 'zoom'; factor: number; nonce: number };
 
-export const VIEWER_TABS: Tab[] = ['exterior', 'cutaway', 'internal', 'bay'];
-export const TAB_ORDER: Tab[] = ['overview', 'exterior', 'cutaway', 'internal', 'autonomy', 'bay', 'specs', 'research'];
+export const TAB_ORDER: Tab[] = ['aircraft', 'overview', 'autonomy', 'specs', 'research'];
+export const MODE_ORDER: ViewMode[] = ['exterior', 'cutaway', 'systems', 'payload'];
+const MODE_CUTAWAY: Record<ViewMode, Cutaway> = { exterior: 'exterior', cutaway: 'partial', systems: 'internal', payload: 'exterior' };
 
 interface State {
   tab: Tab;
+  mode: ViewMode;
   selectedId: string | null;
   hoveredId: string | null;
-  /** Enlarged / focused assembly (component detail mode). */
+  /** Assembly the camera is focused on; its sub-components become individually selectable. */
   focusId: string | null;
   isolate: boolean;
   cutaway: Cutaway;
@@ -37,21 +36,23 @@ interface State {
   payloadId: string;
   preset: PresetId | null;
   cameraRequest: CameraRequest | null;
+  /** Full-screen inspection: interface reduced to the essentials. */
+  immersive: boolean;
   scenario: ScenarioId;
   researchCategory: string;
   researchQuery: string;
   autoRotate: boolean;
   showGrid: boolean;
-  drawer: 'none' | 'systems' | 'inspector';
+  panel: 'none' | 'index' | 'controls' | 'menu';
   renderStatus: 'loading' | 'ready' | 'unavailable';
 
   setTab: (t: Tab) => void;
+  setMode: (m: ViewMode) => void;
   select: (id: string | null, opts?: { fly?: boolean }) => void;
   hover: (id: string | null) => void;
-  enlarge: (id: string) => void;
-  returnToAircraft: () => void;
+  focus: (id: string) => void;
+  exitFocus: () => void;
   setIsolate: (v: boolean) => void;
-  setCutaway: (c: Cutaway) => void;
   setExplode: (v: number) => void;
   setPitch: (v: number) => void;
   setRoll: (v: number) => void;
@@ -61,88 +62,113 @@ interface State {
   resetView: () => void;
   zoom: (factor: number) => void;
   resetAll: () => void;
+  setImmersive: (v: boolean) => void;
   setScenario: (s: ScenarioId) => void;
   setResearchCategory: (c: string) => void;
   setResearchQuery: (q: string) => void;
   setAutoRotate: (v: boolean) => void;
   setShowGrid: (v: boolean) => void;
-  setDrawer: (d: State['drawer']) => void;
+  setPanel: (p: State['panel']) => void;
   setRenderStatus: (s: State['renderStatus']) => void;
 }
 
 let nonce = 1;
 
-function initialTab(): Tab {
+/** Old section hashes from the first version still land somewhere sensible. */
+const LEGACY: Record<string, [Tab, ViewMode?]> = {
+  exterior: ['aircraft', 'exterior'],
+  cutaway: ['aircraft', 'cutaway'],
+  internal: ['aircraft', 'systems'],
+  systems: ['aircraft', 'systems'],
+  bay: ['aircraft', 'payload'],
+  payload: ['aircraft', 'payload'],
+};
+
+export function parseHash(h: string): { tab: Tab; mode?: ViewMode } | null {
+  const k = h.replace('#', '');
+  if (TAB_ORDER.includes(k as Tab)) return { tab: k as Tab };
+  if (LEGACY[k]) return { tab: LEGACY[k][0], mode: LEGACY[k][1] };
+  return null;
+}
+
+function initial(): { tab: Tab; mode: ViewMode } {
   try {
-    const h = location.hash.replace('#', '') as Tab;
-    if (TAB_ORDER.includes(h)) return h;
+    const r = parseHash(location.hash);
+    if (r) return { tab: r.tab, mode: r.mode ?? 'exterior' };
   } catch {
     /* no location in this context */
   }
-  return 'overview';
+  return { tab: 'aircraft', mode: 'exterior' };
 }
 
-const T0 = initialTab();
+const I0 = initial();
 
 export const useStore = create<State>((set, get) => ({
-  tab: T0,
+  tab: I0.tab,
+  mode: I0.mode,
   selectedId: null,
   hoveredId: null,
   focusId: null,
   isolate: false,
-  cutaway: T0 === 'cutaway' ? 'partial' : T0 === 'internal' ? 'internal' : 'exterior',
+  cutaway: MODE_CUTAWAY[I0.mode],
   explode: 0,
   pitch: 0,
   roll: 0,
-  bayOpen: T0 === 'bay',
+  bayOpen: I0.mode === 'payload',
   payloadId: 'payload-map',
-  preset: 'three-quarter-front',
+  preset: I0.mode === 'exterior' ? 'hero' : null,
   cameraRequest: null,
+  immersive: false,
   scenario: 'nominal',
   researchCategory: 'all',
   researchQuery: '',
   autoRotate: false,
-  showGrid: true,
-  drawer: 'none',
+  showGrid: false,
+  panel: 'none',
   renderStatus: 'loading',
 
   setTab: (tab) => {
-    const prev = get().tab;
-    if (prev === tab) return;
-    const patch: Partial<State> = { tab, drawer: 'none' };
-    // Each viewer tab sets a sensible starting presentation; the user can change it afterwards.
-    if (tab === 'exterior') Object.assign(patch, { cutaway: 'exterior', bayOpen: false });
-    if (tab === 'cutaway') Object.assign(patch, { cutaway: 'partial' });
-    if (tab === 'internal') Object.assign(patch, { cutaway: 'internal' });
-    if (tab === 'bay') Object.assign(patch, { cutaway: 'exterior', bayOpen: true, focusId: null, isolate: false });
-    set(patch);
-    if (tab === 'bay') get().select('bay', { fly: true });
-    else if (tab === 'cutaway' || tab === 'internal') {
-      if (!get().selectedId) set({ cameraRequest: { kind: 'preset', id: 'internal', nonce: nonce++ }, preset: 'internal' });
-    } else if (tab === 'overview') {
-      set({ focusId: null, isolate: false, explode: 0, cutaway: 'exterior', cameraRequest: { kind: 'preset', id: 'three-quarter-front', nonce: nonce++ }, preset: 'three-quarter-front' });
-    } else if (tab === 'exterior' && prev === 'overview') {
-      set({ cameraRequest: { kind: 'preset', id: 'three-quarter-front', nonce: nonce++ }, preset: 'three-quarter-front' });
+    if (get().tab === tab) return;
+    set({ tab, panel: 'none', immersive: tab === 'aircraft' ? get().immersive : false });
+  },
+
+  setMode: (mode) => {
+    const prev = get().mode;
+    set({ mode, cutaway: MODE_CUTAWAY[mode], bayOpen: mode === 'payload', panel: get().panel === 'menu' ? 'none' : get().panel });
+    if (mode !== 'systems') set({ explode: 0 });
+    if (mode === prev) return;
+    if (mode === 'payload') {
+      set({ selectedId: get().payloadId, focusId: null, isolate: false, cameraRequest: { kind: 'fit', id: 'bay', mode: 'locate', nonce: nonce++ }, preset: null });
+    } else if ((mode === 'cutaway' || mode === 'systems') && !get().focusId) {
+      set({ cameraRequest: { kind: 'preset', id: 'internal', nonce: nonce++ }, preset: 'internal' });
+    } else if (mode === 'exterior' && (prev === 'payload' || prev === 'systems' || prev === 'cutaway') && !get().focusId) {
+      set({ cameraRequest: { kind: 'preset', id: 'hero', nonce: nonce++ }, preset: 'hero' });
     }
   },
+
   select: (id, opts) => {
     if (id && id.startsWith('payload-')) set({ payloadId: id });
+    // Internal parts cannot be seen through a closed shell: switch to the systems view.
+    const rec = id ? COMPONENT_MAP[id] : null;
+    if (rec && rec.location === 'internal' && get().mode === 'exterior') set({ mode: 'systems', cutaway: 'internal' });
     set({ selectedId: id });
-    if (id && opts?.fly !== false) {
-      const focus = get().focusId;
-      set({ cameraRequest: { kind: 'fit', id, mode: focus ? (focus === id ? 'enlarge' : 'sub') : 'normal', nonce: nonce++ }, preset: null });
-    }
+    if (id && opts?.fly) set({ cameraRequest: { kind: 'fit', id, mode: get().focusId ? 'focus' : 'locate', nonce: nonce++ }, preset: null });
   },
   hover: (hoveredId) => get().hoveredId !== hoveredId && set({ hoveredId }),
-  enlarge: (id) => set({ focusId: id, selectedId: id, cameraRequest: { kind: 'fit', id, mode: 'enlarge', nonce: nonce++ }, preset: null }),
-  returnToAircraft: () =>
-    set({ focusId: null, isolate: false, cameraRequest: { kind: 'preset', id: 'three-quarter-front', nonce: nonce++ }, preset: 'three-quarter-front' }),
+
+  focus: (id) => {
+    const rec = COMPONENT_MAP[id];
+    if (rec && rec.location === 'internal' && (get().mode === 'exterior' || get().mode === 'payload')) set({ mode: 'systems', cutaway: 'internal', bayOpen: false });
+    set({ focusId: id, selectedId: id, cameraRequest: { kind: 'fit', id, mode: 'focus', nonce: nonce++ }, preset: null });
+  },
+  exitFocus: () => set({ focusId: null, isolate: false, cameraRequest: { kind: 'restore', nonce: nonce++ } }),
   setIsolate: (isolate) => {
     const sel = get().selectedId;
-    if (isolate && sel) set({ isolate, focusId: get().focusId ?? sel, cameraRequest: { kind: 'fit', id: get().focusId ?? sel, mode: 'enlarge', nonce: nonce++ } });
-    else set({ isolate: false });
+    if (isolate && sel) {
+      const target = get().focusId ?? sel;
+      set({ isolate, focusId: target, cameraRequest: get().focusId ? get().cameraRequest : { kind: 'fit', id: target, mode: 'focus', nonce: nonce++ } });
+    } else set({ isolate: false });
   },
-  setCutaway: (cutaway) => set({ cutaway }),
   setExplode: (explode) => set({ explode }),
   setPitch: (pitch) => set({ pitch }),
   setRoll: (roll) => set({ roll }),
@@ -150,30 +176,35 @@ export const useStore = create<State>((set, get) => ({
   setPayload: (payloadId) => set({ payloadId, selectedId: payloadId }),
   goPreset: (id) => {
     const patch: Partial<State> = { preset: id, cameraRequest: { kind: 'preset', id, nonce: nonce++ } };
-    if (id === 'internal' && get().cutaway === 'exterior') patch.cutaway = 'partial';
+    if (id === 'internal' && get().mode === 'exterior') Object.assign(patch, { mode: 'cutaway', cutaway: 'partial' });
     set(patch);
   },
-  resetView: () => get().goPreset('three-quarter-front'),
+  resetView: () => {
+    if (get().focusId) set({ focusId: null, isolate: false });
+    get().goPreset(get().mode === 'cutaway' || get().mode === 'systems' ? 'internal' : 'hero');
+  },
   zoom: (factor) => set({ cameraRequest: { kind: 'zoom', factor, nonce: nonce++ }, preset: null }),
-  /** Restores the viewer to its initial state; research filters and display preferences are kept. */
+  /** Back to the opening presentation; research filters and display preferences are kept. */
   resetAll: () =>
     set({
+      mode: 'exterior',
       selectedId: null,
       focusId: null,
       isolate: false,
-      cutaway: get().tab === 'cutaway' ? 'partial' : get().tab === 'internal' ? 'internal' : 'exterior',
+      cutaway: 'exterior',
       explode: 0,
       pitch: 0,
       roll: 0,
-      bayOpen: get().tab === 'bay',
-      preset: 'three-quarter-front',
-      cameraRequest: { kind: 'preset', id: 'three-quarter-front', nonce: nonce++ },
+      bayOpen: false,
+      preset: 'hero',
+      cameraRequest: { kind: 'preset', id: 'hero', nonce: nonce++ },
     }),
+  setImmersive: (immersive) => set({ immersive, panel: 'none' }),
   setScenario: (scenario) => set({ scenario }),
   setResearchCategory: (researchCategory) => set({ researchCategory }),
   setResearchQuery: (researchQuery) => set({ researchQuery }),
   setAutoRotate: (autoRotate) => set({ autoRotate }),
   setShowGrid: (showGrid) => set({ showGrid }),
-  setDrawer: (drawer) => set({ drawer }),
+  setPanel: (panel) => set({ panel }),
   setRenderStatus: (renderStatus) => set({ renderStatus }),
 }));

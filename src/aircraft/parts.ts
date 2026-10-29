@@ -18,6 +18,7 @@ import {
   hLo,
   hUp,
   lerp,
+  mouldNormal,
   smoothstep,
   xLE,
   zBody,
@@ -27,7 +28,6 @@ import {
   baked,
   edgeCluster,
   gridSurface,
-  linesGeometry,
   loftTube,
   mergeGeos,
   rbox,
@@ -55,6 +55,8 @@ export type MatKey =
   | 'cable'
   | 'duct'
   | 'line'
+  | 'seam'
+  | 'fastener'
   | 'decal-wordmark'
   | 'decal-reg'
   | 'decal-nostep'
@@ -76,6 +78,8 @@ export interface Part {
   explodeExtra?: [number, number, number];
   pivot?: { origin: P3; axis: P3; driver: Driver; sense: number };
   payload?: string;
+  /** Surface detail (seams, decals, fasteners): never picked, never casts shadows. */
+  decor?: boolean;
 }
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -88,6 +92,19 @@ const off = (s: Surf, d: number) => (s === 'up' ? d : -d);
 /* ------------------------------------------------------------------ */
 /* Surface helpers                                                     */
 /* ------------------------------------------------------------------ */
+
+/** Replace mesh normals with the analytic mould-line normal so adjacent patches shade seamlessly. */
+function mouldNormals(g: THREE.BufferGeometry, s: Surf) {
+  const pos = g.getAttribute('position');
+  const nor = g.getAttribute('normal') as THREE.BufferAttribute;
+  const n: [number, number, number] = [0, 1, 0];
+  for (let i = 0; i < pos.count; i++) {
+    mouldNormal(pos.getX(i), pos.getZ(i), s, n);
+    nor.setXYZ(i, n[0], n[1], n[2]);
+  }
+  nor.needsUpdate = true;
+  return g;
+}
 
 /** Body patch over x ∈ [x0,x1] with z between zA(x) and zB(x). */
 function bodyPatch(
@@ -102,7 +119,7 @@ function bodyPatch(
   lift = 0,
 ) {
   const h = H(s);
-  return gridSurface(
+  const g = gridSurface(
     nu,
     nv,
     (u, v) => {
@@ -115,12 +132,13 @@ function bodyPatch(
     },
     s === 'up' ? UP : DOWN,
   );
+  return mouldNormals(g, s);
 }
 
 /** Wing patch over z ∈ [z0,z1] (signed by side) and chord fraction s ∈ [s0,s1]. */
 function wingPatch(side: number, z0: number, z1: number, s0: number, s1: number, s: Surf, nz: number, ns: number, lift = 0) {
   const h = H(s);
-  return gridSurface(
+  const g = gridSurface(
     nz,
     ns,
     (u, v) => {
@@ -133,6 +151,7 @@ function wingPatch(side: number, z0: number, z1: number, s0: number, s1: number,
     },
     s === 'up' ? UP : DOWN,
   );
+  return mouldNormals(g, s);
 }
 
 function surfPoint(x: number, z: number, s: Surf, lift = 0.004): P3 {
@@ -171,6 +190,48 @@ function wingSeamZ(side: number, az: number, s0: number, s1: number, surf: Surf)
   return seam(pts, surf, 0.004, 1);
 }
 
+/** Outward mould-line normal at a point, choosing the upper or lower surface by height. */
+function autoNormal(p: P3): P3 {
+  const mid = (hUp(p[0], p[2]) + hLo(p[0], p[2])) / 2;
+  return mouldNormal(p[0], p[2], p[1] >= mid ? 'up' : 'lo');
+}
+
+/**
+ * Panel line as a thin ribbon lying on the surface (reads as a fine recessed gap rather than a
+ * floating wireframe line). Width in metres.
+ */
+function ribbon(lines: P3[][], width: number, normalAt: (p: P3, i: number, line: P3[]) => P3 = (p) => autoNormal(p)): THREE.BufferGeometry {
+  const pos: number[] = [];
+  const nor: number[] = [];
+  const idx: number[] = [];
+  const t = new THREE.Vector3();
+  const n = new THREE.Vector3();
+  const side = new THREE.Vector3();
+  for (const pl of lines) {
+    if (pl.length < 2) continue;
+    const base = pos.length / 3;
+    for (let i = 0; i < pl.length; i++) {
+      const a = pl[Math.max(0, i - 1)];
+      const b = pl[Math.min(pl.length - 1, i + 1)];
+      t.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]).normalize();
+      n.set(...normalAt(pl[i], i, pl));
+      side.crossVectors(t, n).normalize().multiplyScalar(width / 2);
+      const p = pl[i];
+      pos.push(p[0] + side.x, p[1] + side.y, p[2] + side.z, p[0] - side.x, p[1] - side.y, p[2] - side.z);
+      nor.push(n.x, n.y, n.z, n.x, n.y, n.z);
+      if (i < pl.length - 1) {
+        const k = base + i * 2;
+        idx.push(k, k + 2, k + 1, k + 1, k + 2, k + 3);
+      }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setIndex(idx);
+  return g;
+}
+
 /** Matrix that places an object tangent to the surface at (x,z), with its local Y = surface normal. */
 function tangentMatrix(x: number, z: number, s: Surf, lift: number, scale = 1, upHint = new THREE.Vector3(1, 0, 0)) {
   const nUp = surfaceNormalUp(x, z, s);
@@ -206,15 +267,29 @@ function decal(x: number, z: number, w: number, h: number, s: Surf, along: THREE
 /* Access panel helper (patch + outline + fastener ring)                */
 /* ------------------------------------------------------------------ */
 
-const FASTENER = new THREE.CylinderGeometry(0.011, 0.011, 0.004, 8);
+const FASTENER = new THREE.CylinderGeometry(0.0085, 0.0085, 0.003, 10);
 
 function accessPanel(id: string, x0: number, x1: number, z0: number, z1: number, s: Surf = 'up'): Part[] {
-  const geo = gridSurface(10, 8, (u, v) => {
-    const x = lerp(x0, x1, u);
+  // rounded-corner outline, as a real removable panel would have
+  const r = Math.min(0.06, (x1 - x0) / 4, Math.abs(z1 - z0) / 4);
+  const loop: [number, number][] = [];
+  const corners: [number, number, number][] = [
+    [x1 - r, Math.max(z0, z1) - r, 0],
+    [x0 + r, Math.max(z0, z1) - r, Math.PI / 2],
+    [x0 + r, Math.min(z0, z1) + r, Math.PI],
+    [x1 - r, Math.min(z0, z1) + r, (3 * Math.PI) / 2],
+  ];
+  for (const [cx, cz, a0] of corners) for (let k = 0; k <= 6; k++) {
+    const a = a0 + (k / 6) * (Math.PI / 2);
+    loop.push([cx + Math.cos(a) * r, cz + Math.sin(a) * r]);
+  }
+  loop.push(loop[0]);
+  const geo = mouldNormals(gridSurface(14, 10, (u, v) => {
+    const x = lerp(x0 + 0.004, x1 - 0.004, u);
     const z = lerp(z0, z1, v);
-    return [x, H(s)(x, z) + off(s, 0.005), z];
-  }, s === 'up' ? UP : DOWN);
-  const outline = linesGeometry([seam([[x0, z0], [x1, z0], [x1, z1], [x0, z1], [x0, z0]], s, 0.008, 0.05)]);
+    return [x, H(s)(x, z) + off(s, 0.0035), z];
+  }, s === 'up' ? UP : DOWN), s);
+  const outline = ribbon([seam(loop, s, 0.006, 0.04)], 0.011);
   const inst: THREE.Matrix4[] = [];
   const inset = 0.035;
   const edges: [number, number, number, number][] = [
@@ -224,13 +299,13 @@ function accessPanel(id: string, x0: number, x1: number, z0: number, z1: number,
     [x0 + inset, z1 - inset, x0 + inset, z0 + inset],
   ];
   for (const [ax, az, bx, bz] of edges) {
-    const n = Math.max(2, Math.round(Math.hypot(bx - ax, bz - az) / 0.12));
-    for (let k = 0; k < n; k++) inst.push(tangentMatrix(lerp(ax, bx, k / n), lerp(az, bz, k / n), s, 0.007));
+    const n = Math.max(2, Math.round(Math.hypot(bx - ax, bz - az) / 0.15));
+    for (let k = 0; k < n; k++) inst.push(tangentMatrix(lerp(ax, bx, k / n), lerp(az, bz, k / n), s, 0.005));
   }
   return [
     { key: `${id}-skin`, componentId: id, geometry: geo, mat: 'panel', role: 'shell', skin: s },
-    { key: `${id}-outline`, componentId: id, geometry: outline, mat: 'line', role: 'shell', kind: 'lines', skin: s },
-    { key: `${id}-fasteners`, componentId: id, geometry: FASTENER, mat: 'metal', role: 'shell', kind: 'instanced', instances: inst, skin: s },
+    { key: `${id}-outline`, componentId: id, geometry: outline, mat: 'seam', role: 'shell', skin: s, decor: true },
+    { key: `${id}-fasteners`, componentId: id, geometry: FASTENER, mat: 'fastener', role: 'shell', kind: 'instanced', instances: inst, skin: s, decor: true },
   ];
 }
 
@@ -247,10 +322,12 @@ export function buildParts(): Part[] {
   const PB = (x: number) => zBody(x);
 
   /* ---------- Forward fuselage ---------- */
-  add({ key: 'fwd-up', componentId: 'fwd-fuselage', geometry: bodyPatch(X_FWD, NOSE_X, NB, PB, 'up', 70, 56), mat: 'skin', role: 'shell', skin: 'up' });
-  add({ key: 'fwd-lo', componentId: 'fwd-fuselage', geometry: bodyPatch(X_FWD, NOSE_X, NB, PB, 'lo', 70, 56), mat: 'skin', role: 'shell', skin: 'lo' });
-  // radome (satin) overlay forward of the seam at X 5.2 — upper
-  add({ key: 'fwd-radome', componentId: 'fwd-fuselage', geometry: bodyPatch(5.2, NOSE_X, (x) => -zBody(x) * 0.999, (x) => zBody(x) * 0.999, 'up', 40, 40, 'both', 0.002), mat: 'skinSatin', role: 'shell', skin: 'up' });
+  const RADOME_X = 5.2;
+  add({ key: 'fwd-up', componentId: 'fwd-fuselage', geometry: bodyPatch(X_FWD, RADOME_X, NB, PB, 'up', 48, 56), mat: 'skin', role: 'shell', skin: 'up' });
+  add({ key: 'fwd-lo', componentId: 'fwd-fuselage', geometry: bodyPatch(X_FWD, RADOME_X, NB, PB, 'lo', 48, 56), mat: 'skin', role: 'shell', skin: 'lo' });
+  // radome: satin-finish nose section forward of the seam at X 5.2 (upper and lower)
+  add({ key: 'fwd-radome', componentId: 'fwd-fuselage', geometry: bodyPatch(RADOME_X, NOSE_X, NB, PB, 'up', 56, 48), mat: 'skinSatin', role: 'shell', skin: 'up' });
+  add({ key: 'fwd-radome-lo', componentId: 'fwd-fuselage', geometry: bodyPatch(RADOME_X, NOSE_X, NB, PB, 'lo', 56, 48), mat: 'skinSatin', role: 'shell', skin: 'lo' });
 
   /* ---------- Centre body ---------- */
   const FW = (x: number) => fairingWidth(x);
@@ -334,7 +411,7 @@ export function buildParts(): Part[] {
   // gear wells
   bodySeams.push(seam([[4.3, -0.22], [5.2, -0.22], [5.2, 0.22], [4.3, 0.22], [4.3, -0.22]], 'lo', 0.006, 0.05));
   for (const sg of [-1, 1]) bodySeams.push(seam([[-2.3, sg * 1.62], [-0.9, sg * 1.62], [-0.9, sg * 2.2], [-2.3, sg * 2.2], [-2.3, sg * 1.62]], 'lo', 0.006, 0.05));
-  add({ key: 'ctr-seams', componentId: 'ctr-body', geometry: linesGeometry(bodySeams), mat: 'line', role: 'shell', kind: 'lines' });
+  add({ key: 'ctr-seams', componentId: 'ctr-body', geometry: ribbon(bodySeams, 0.014), mat: 'seam', role: 'shell', decor: true });
 
   /* ---------- Outer wings, elevons, tips ---------- */
   const EL_IN: [number, number] = [3.0, 4.8];
@@ -379,8 +456,8 @@ export function buildParts(): Part[] {
         role: 'shell',
         pivot: { origin: o, axis, driver: side === 'port' ? 'elevon-port' : 'elevon-stbd', sense },
       });
-      const hingeLine = linesGeometry([wingSeamS(sign, HINGE_S, a, b, 'up'), wingSeamS(sign, HINGE_S, a, b, 'lo')]);
-      add({ key: `${id}-hinge`, componentId: wid, geometry: hingeLine, mat: 'line', role: 'shell', kind: 'lines' });
+      const hingeLine = ribbon([wingSeamS(sign, HINGE_S, a, b, 'up'), wingSeamS(sign, HINGE_S, a, b, 'lo'), wingSeamZ(sign, a + 0.01, HINGE_S, 1, 'up'), wingSeamZ(sign, b - 0.01, HINGE_S, 1, 'up'), wingSeamZ(sign, a + 0.01, HINGE_S, 1, 'lo'), wingSeamZ(sign, b - 0.01, HINGE_S, 1, 'lo')], 0.016);
+      add({ key: `${id}-hinge`, componentId: wid, geometry: hingeLine, mat: 'seam', role: 'shell', decor: true });
     }
     // wing seams
     const ws: P3[][] = [];
@@ -390,7 +467,7 @@ export function buildParts(): Part[] {
       for (const az of [4.6, 6.2]) ws.push(wingSeamZ(sign, az, 0.12, HINGE_S, surf));
       ws.push(wingSeamZ(sign, TIP_Z, 0, 1, surf));
     }
-    add({ key: `${wid}-seams`, componentId: wid, geometry: linesGeometry(ws), mat: 'line', role: 'shell', kind: 'lines' });
+    add({ key: `${wid}-seams`, componentId: wid, geometry: ribbon(ws, 0.012), mat: 'seam', role: 'shell', decor: true });
   }
 
   /* ---------- Dorsal fairing + inlet ---------- */
@@ -419,7 +496,14 @@ export function buildParts(): Part[] {
   // inlet lip trim line
   const lip: P3[] = [];
   for (let i = 0; i <= 40; i++) lip.push(fairingPoint(1, edgeCluster(i / 40)).map((n, k) => (k === 1 ? n + 0.004 : n)) as P3);
-  add({ key: 'inlet-lip', componentId: 'inlet', geometry: linesGeometry([lip]), mat: 'line', role: 'shell', kind: 'lines' });
+  // machined lip edge: a slim rounded trim that catches a highlight along the raked inlet
+  add({
+    key: 'inlet-lip',
+    componentId: 'inlet',
+    geometry: new THREE.TubeGeometry(new THREE.CatmullRomCurve3(lip.map((q) => new THREE.Vector3(q[0] + 0.004, q[1] - 0.006, q[2]))), 80, 0.011, 8, false),
+    mat: 'skinSatin',
+    role: 'shell',
+  });
 
   /* ---------- Sensor apertures ---------- */
   add({
@@ -449,7 +533,7 @@ export function buildParts(): Part[] {
     geo.setIndex(idx);
     geo.computeVertexNormals();
     add({ key: 'sensor-ventral', componentId: 'sensor-ventral', geometry: geo, mat: 'glass', role: 'shell', skin: 'lo' });
-    add({ key: 'sensor-ventral-frame', componentId: 'sensor-ventral', geometry: linesGeometry([pts]), mat: 'line', role: 'shell', kind: 'lines' });
+    add({ key: 'sensor-ventral-frame', componentId: 'sensor-ventral', geometry: ribbon([pts], 0.014), mat: 'seam', role: 'shell', decor: true });
   }
   for (const sg of [-1, 1]) {
     add({
@@ -497,8 +581,25 @@ export function buildParts(): Part[] {
       }
     }
     add({ key: 'ap-engine-skin', componentId: 'ap-engine', geometry: geo, mat: 'panel', role: 'shell', skin: 'up' });
-    add({ key: 'ap-engine-ol', componentId: 'ap-engine', geometry: linesGeometry([ol]), mat: 'line', role: 'shell', kind: 'lines' });
-    add({ key: 'ap-engine-f', componentId: 'ap-engine', geometry: FASTENER, mat: 'metal', role: 'shell', kind: 'instanced', instances: inst });
+    const fairNormal = (q: P3): P3 => {
+      // numerical normal of the fairing surface near q (search the nearest (u, v) sample)
+      let best = [0.4, 0] as [number, number];
+      let bd = Infinity;
+      for (let u = 0.25; u <= 0.6; u += 0.01)
+        for (let v = -0.6; v <= 0.6; v += 0.02) {
+          const f = fp(u, v);
+          const d = (f[0] - q[0]) ** 2 + (f[2] - q[2]) ** 2;
+          if (d < bd) (bd = d), (best = [u, v]);
+        }
+      const [u, v] = best;
+      const a = new THREE.Vector3(...fp(u + 0.01, v)).sub(new THREE.Vector3(...fp(u - 0.01, v)));
+      const b = new THREE.Vector3(...fp(u, v + 0.02)).sub(new THREE.Vector3(...fp(u, v - 0.02)));
+      const nn = new THREE.Vector3().crossVectors(b, a).normalize();
+      if (nn.y < 0) nn.negate();
+      return [nn.x, nn.y, nn.z];
+    };
+    add({ key: 'ap-engine-ol', componentId: 'ap-engine', geometry: ribbon([ol], 0.011, fairNormal), mat: 'seam', role: 'shell', decor: true });
+    add({ key: 'ap-engine-f', componentId: 'ap-engine', geometry: FASTENER, mat: 'fastener', role: 'shell', kind: 'instanced', instances: inst, decor: true });
   }
   // conformal antenna (comms external)
   parts.push(
@@ -506,15 +607,15 @@ export function buildParts(): Part[] {
   );
 
   /* ---------- Markings ---------- */
-  add({ key: 'decal-wordmark', componentId: 'wing-port', geometry: decal(-1.35, -5.3, 1.9, 0.48, 'up', new THREE.Vector3(0, 0, 1)), mat: 'decal-wordmark', role: 'shell', skin: 'up' });
-  add({ key: 'decal-reg', componentId: 'wing-stbd', geometry: decal(-1.5, 5.4, 1.5, 0.3, 'up', new THREE.Vector3(0, 0, 1)), mat: 'decal-reg', role: 'shell', skin: 'up' });
+  add({ key: 'decal-wordmark', componentId: 'wing-port', geometry: decal(-1.35, -5.3, 1.9, 0.48, 'up', new THREE.Vector3(0, 0, 1)), mat: 'decal-wordmark', role: 'shell', skin: 'up', decor: true });
+  add({ key: 'decal-reg', componentId: 'wing-stbd', geometry: decal(-1.5, 5.4, 1.5, 0.3, 'up', new THREE.Vector3(0, 0, 1)), mat: 'decal-reg', role: 'shell', skin: 'up', decor: true });
   for (const sg of [-1, 1]) {
     const az = 4.0;
     const x = xLE(az) - 0.7 * chord(az);
-    add({ key: `decal-nostep-${sg}`, componentId: sg < 0 ? 'wing-port' : 'wing-stbd', geometry: decal(x, sg * az, 0.42, 0.11, 'up', new THREE.Vector3(0, 0, 1)), mat: 'decal-nostep', role: 'shell', skin: 'up' });
+    add({ key: `decal-nostep-${sg}`, componentId: sg < 0 ? 'wing-port' : 'wing-stbd', geometry: decal(x, sg * az, 0.42, 0.11, 'up', new THREE.Vector3(0, 0, 1)), mat: 'decal-nostep', role: 'shell', skin: 'up', decor: true });
   }
-  add({ key: 'decal-intake', componentId: 'fwd-fuselage', geometry: decal(2.95, 0, 0.95, 0.16, 'up', new THREE.Vector3(0, 0, 1)), mat: 'decal-intake', role: 'shell', skin: 'up' });
-  add({ key: 'decal-belly', componentId: 'ctr-body', geometry: decal(-2.0, 0, 1.0, 0.25, 'lo', new THREE.Vector3(0, 0, -1)), mat: 'decal-belly', role: 'shell', skin: 'lo' });
+  add({ key: 'decal-intake', componentId: 'fwd-fuselage', geometry: decal(2.95, 0, 0.95, 0.16, 'up', new THREE.Vector3(0, 0, 1)), mat: 'decal-intake', role: 'shell', skin: 'up', decor: true });
+  add({ key: 'decal-belly', componentId: 'ctr-body', geometry: decal(-2.0, 0, 1.0, 0.25, 'lo', new THREE.Vector3(0, 0, -1)), mat: 'decal-belly', role: 'shell', skin: 'lo', decor: true });
 
   /* ---------- Landing gear ---------- */
   parts.push(...landingGear('nose', 4.75, 0, NOSE_WHEEL_R, 0.065, 0.16));

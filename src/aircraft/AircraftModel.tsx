@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { useFrame, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import { buildParts, type Part } from './parts';
-import { createMaterial, ACCENT } from './materials';
+import { createMaterial, BASE_OPACITY } from './materials';
 import { explodeOffset, isDescendant, resolvePick, COMPONENT_MAP } from '../data/components';
 import { useStore } from '../state/store';
 import { anim, registry } from './runtime';
@@ -16,7 +16,10 @@ const CLIP_PLANES = [
 ];
 const isClippedPoint = (p: THREE.Vector3) => p.z > 0 && p.y > CLIP_Y && p.z < 2.5;
 
-type Vis = { hidden: boolean; ghost: number; clip: boolean; sel: number; hov: boolean };
+const HIGHLIGHT = new THREE.Color('#bfe0e8');
+const NO_RAY = () => null;
+
+type Vis = { hidden: boolean; ghost: number; clip: boolean; sel: number; hov: boolean; reach: boolean };
 
 /** Components that own geometry (an assembly without its own meshes highlights its children fully). */
 const OWN_GEOMETRY = new Set<string>();
@@ -27,23 +30,27 @@ function visualKey(s: ReturnType<typeof useStore.getState>, part: Part): string 
   const focusedHere = !!s.focusId && inFocus;
   const selectedHere = !!s.selectedId && isDescendant(cid, s.selectedId);
   const hidden = (!!part.payload && part.payload !== s.payloadId) || (s.isolate && !inFocus);
+  // Focus keeps the rest of the aircraft solid (context matters); only the systems view ghosts the shell.
   let ghost = 0;
-  if (s.focusId && !inFocus && !s.isolate) ghost = 0.1;
-  if (part.role === 'shell' && s.cutaway === 'internal' && !focusedHere && !selectedHere) ghost = ghost ? Math.min(ghost, 0.07) : 0.07;
+  if (part.role === 'shell' && s.cutaway === 'internal' && !focusedHere && !selectedHere) ghost = 0.07;
   const clip = part.role === 'shell' && s.cutaway === 'partial' && !focusedHere && !selectedHere;
-  const hov = s.tab !== 'overview' && !!s.hoveredId && isDescendant(cid, s.hoveredId);
+  const hov = !!s.hoveredId && isDescendant(cid, s.hoveredId);
   // sel: 0 none, 1 selected, 2 selected but also the enlarged assembly (soft), 3 child of a selected part (soft)
   let sel = 0;
-  if (selectedHere && s.tab !== 'overview') {
+  if (selectedHere) {
     if (s.focusId && s.focusId === s.selectedId) sel = 2;
     else if (cid !== s.selectedId && OWN_GEOMETRY.has(s.selectedId!)) sel = 3;
     else sel = 1;
   }
-  return [hidden ? 1 : 0, ghost, clip ? 1 : 0, sel, hov ? 1 : 0].join('|');
+  // Internal parts sit behind a closed skin in the exterior views; small gaps between panels must
+  // not let a click reach them. They become clickable once they are actually exposed.
+  const exposedBay = s.bayOpen && (cid === 'bay' || cid.startsWith('payload-'));
+  const reach = part.role !== 'internal' || s.cutaway !== 'exterior' || exposedBay || focusedHere;
+  return [hidden ? 1 : 0, ghost, clip ? 1 : 0, sel, hov ? 1 : 0, reach ? 1 : 0].join('|');
 }
 const parseKey = (k: string): Vis => {
-  const [h, g, c, s, v] = k.split('|');
-  return { hidden: h === '1', ghost: +g, clip: c === '1', sel: +s, hov: v === '1' };
+  const [h, g, c, s, v, r] = k.split('|');
+  return { hidden: h === '1', ghost: +g, clip: c === '1', sel: +s, hov: v === '1', reach: r === '1' };
 };
 
 function PartObject({ part }: { part: Part }) {
@@ -84,7 +91,7 @@ function PartObject({ part }: { part: Part }) {
   // Register for camera fitting
   useEffect(() => {
     const o = obj.current;
-    if (!o || part.kind === 'lines') return;
+    if (!o || part.kind === 'lines' || part.decor) return;
     o.userData.componentId = part.componentId;
     let set = registry.get(part.componentId);
     if (!set) registry.set(part.componentId, (set = new Set()));
@@ -97,34 +104,25 @@ function PartObject({ part }: { part: Part }) {
   // Apply visual state to the material
   useLayoutEffect(() => {
     const m = material as THREE.MeshStandardMaterial & THREE.LineBasicMaterial;
-    const baseOpacity = part.mat === 'line' ? 0.55 : 1;
+    const baseOpacity = BASE_OPACITY[part.mat] ?? 1;
     const isDecal = part.mat.startsWith('decal-');
+    const seeThrough = baseOpacity < 1 || isDecal;
     const ghosted = vis.ghost > 0;
-    m.transparent = ghosted || part.mat === 'line' || isDecal;
-    m.opacity = ghosted ? (part.mat === 'line' ? vis.ghost * 2 : vis.ghost) : baseOpacity;
-    m.depthWrite = !ghosted && !isDecal && part.mat !== 'line';
+    m.transparent = ghosted || seeThrough;
+    m.opacity = ghosted ? (seeThrough ? vis.ghost * 1.5 : vis.ghost) : baseOpacity;
+    m.depthWrite = !ghosted && !seeThrough;
     m.clippingPlanes = vis.clip ? CLIP_PLANES : null;
     m.clipIntersection = true;
     if ('emissive' in m && m.emissive && part.mat !== 'indicator') {
-      if (vis.sel === 1) {
-        m.emissive.copy(ACCENT);
-        m.emissiveIntensity = 0.13;
-      } else if (vis.hov) {
-        m.emissive.copy(ACCENT);
-        m.emissiveIntensity = 0.07;
-      } else if (vis.sel === 3) {
-        m.emissive.copy(ACCENT);
-        m.emissiveIntensity = 0.04;
-      } else if (vis.sel === 2) {
-        m.emissive.copy(ACCENT);
-        m.emissiveIntensity = 0.025;
+      // restrained, neutral-cool lift rather than a coloured glow
+      const lvl = vis.sel === 1 ? 0.03 : vis.hov ? 0.016 : vis.sel === 3 ? 0.012 : vis.sel === 2 ? 0.008 : 0;
+      if (lvl > 0 && part.mat !== 'seam' && part.mat !== 'fastener') {
+        m.emissive.copy(HIGHLIGHT);
+        m.emissiveIntensity = lvl;
       } else {
         m.emissive.setRGB(0, 0, 0);
         m.emissiveIntensity = 0;
       }
-    }
-    if (part.mat === 'line') {
-      (m as THREE.LineBasicMaterial).color.set(vis.sel === 1 ? '#9fd3de' : '#5d666f');
     }
     m.needsUpdate = true;
   }, [key, material, part.mat, vis.clip, vis.ghost, vis.hov, vis.sel]);
@@ -142,7 +140,8 @@ function PartObject({ part }: { part: Part }) {
     }
   });
 
-  const pickable = !vis.hidden && vis.ghost === 0 && part.kind !== 'lines';
+  const pickable = !vis.hidden && vis.ghost === 0 && part.kind !== 'lines' && !part.decor && vis.reach;
+  const shadows = !part.decor && part.kind !== 'lines' && vis.ghost === 0;
 
   const accept = (e: ThreeEvent<PointerEvent | MouseEvent>) => {
     if (!pickable) return false;
@@ -169,7 +168,10 @@ function PartObject({ part }: { part: Part }) {
   };
 
   const handlers = pickable ? { onPointerMove: onMove, onPointerOut: onOut, onClick } : {};
-  const noRay = pickable ? undefined : () => null;
+  // Always pass an explicit function: React Three Fiber does not restore the prototype method
+  // when this prop changes back to undefined, which would leave a part unclickable.
+  const rayFn = part.kind === 'instanced' ? THREE.InstancedMesh.prototype.raycast : THREE.Mesh.prototype.raycast;
+  const noRay = pickable ? rayFn : NO_RAY;
 
   let inner: React.ReactNode;
   if (part.kind === 'lines') {
@@ -181,11 +183,15 @@ function PartObject({ part }: { part: Part }) {
         args={[geometry, material, part.instances!.length]}
         name={part.key}
         raycast={noRay as never}
+        castShadow={shadows}
+        receiveShadow={shadows}
         {...handlers}
       />
     );
   } else {
-    inner = <mesh ref={obj as never} geometry={geometry} material={material} name={part.key} raycast={noRay as never} {...handlers} />;
+    inner = (
+      <mesh ref={obj as never} geometry={geometry} material={material} name={part.key} raycast={noRay as never} castShadow={shadows} receiveShadow={shadows} {...handlers} />
+    );
   }
 
   return (
@@ -210,7 +216,13 @@ export function AircraftModel() {
   useEffect(() => {
     useStore.getState().setRenderStatus('ready');
     const w = window as unknown as { __nightfall?: Record<string, unknown> };
-    w.__nightfall = { ...(w.__nightfall ?? {}), parts: parts.length, registry, store: useStore };
+    w.__nightfall = {
+      ...(w.__nightfall ?? {}),
+      parts: parts.length,
+      registry,
+      store: useStore,
+      resolvePick: (id: string) => resolvePick(id, useStore.getState().focusId),
+    };
   }, [parts]);
   return (
     <group name="CX-7 Nightfall">

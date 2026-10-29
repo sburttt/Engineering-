@@ -14,23 +14,32 @@ npm run dev            # http://localhost:5173
 npm run build          # type-check + production build → dist/
 npm run build:single   # one self-contained HTML file → artifact/nightfall.html
 npm run validate       # data-integrity checks (no browser)
-npm run test:e2e -- http://127.0.0.1:5173/ e2e-shots   # browser checks + screenshots (dev server running)
+npm run test:e2e -- 'http://127.0.0.1:4173/?render=low' e2e-shots   # 69 browser checks + screenshots (preview server running)
 ```
 
 Requires Node 20+. The end-to-end script uses Playwright with Chromium (it falls back to a global install).
 
 ## What is in it
 
-| Section | What you can do |
+The site opens directly on the aircraft. The viewer is the home page; the other pages are short editorial documents.
+
+| Page | What you can do |
 | --- | --- |
-| Overview | Brand, concept statement, design priorities, live rotating model |
-| Exterior | Orbit / zoom / pan, 9 camera presets, click any part, enlarge, isolate, elevon pitch/roll sliders |
-| Cutaway | Starboard upper shell clipped away to show the internal layout |
-| Internal systems | Shell ghosted; every module, frame, spar and rib is selectable |
+| Aircraft | Orbit / zoom / pan, six presets (Hero, Front, Side, Top, Rear, Under), click any part for a compact information panel, Focus view (returns to your previous camera), Isolate, a component index, and four modes: Exterior, Cutaway, Systems (with exploded view) and Payload (swap six non-weapon modules). **Inspect** (or F) opens a full-screen inspection mode. |
+| Overview | Technical overview: design philosophy, configuration notes linked to the 3D parts, drawings, finish concept, what can and cannot be measured, how to use the viewer |
 | Autonomy | Clickable 9-layer architecture, autonomy levels, capability matrix, safety mechanisms, synthetic scenario simulator with human authorisation and audit log |
-| Equipment bay | Bay doors open; swap between six non-weapon mission modules |
-| Specifications | Spec tables by category, plus plan / side / front views computed from the model geometry |
-| Research library | 14 public-source references with labelled claims, filters and a comparison matrix |
+| Specification | Spec tables by category, plus plan / side / front views computed from the model geometry |
+| Research | 14 public-source references with labelled claims, filters and a comparison matrix |
+
+Keys in the viewer: 1–6 presets · R reset view · F full-screen inspection · X exploded view (Systems) · +/− zoom · Esc steps back.
+
+## Rendering notes
+
+- Every skin patch shades with an analytic normal from the shared mould-line functions, so patch joints are invisible.
+- Panel lines are thin dark ribbons lying on the surface (not wireframe lines) and are never clickable.
+- Finish: coated graphite composite (low metalness, satin clear coat) with a faint world-space roughness variation.
+- Studio lighting from soft light cards (no external HDR files), a shadow-casting key light and contact shadows.
+- `?render=low` lowers resolution and turns shadows off; the automated tests use it on software GL.
 
 ## Where things live
 
@@ -38,6 +47,9 @@ Requires Node 20+. The end-to-end script uses Playwright with Chromium (it falls
 - Airframe definition (coordinate system, planform, surface heights): `src/aircraft/geometry/airframe.ts`
 - Mesh construction for every named part: `src/aircraft/parts.ts` (helpers in `geometry/builders.ts`)
 - 3D scene, lights, camera rig, presets: `src/aircraft/AircraftScene.tsx`, `src/aircraft/presets.ts`
+- Viewer interface (modes, presets, caption, focus bar): `src/components/viewer/ViewerChrome.tsx`
+- Component information panel: `src/components/inspection/Inspector.tsx` · Index: `src/components/layout/SystemsTree.tsx`
+- Technical overview page: `src/components/overview/TechnicalOverview.tsx`
 - Selection / highlight / cutaway / explode logic per part: `src/aircraft/AircraftModel.tsx`
 - Component metadata (59 records): `src/data/components.ts`
 - Specifications: `src/data/aircraft.ts` · Equipment modules: `src/data/equipmentModules.ts`
