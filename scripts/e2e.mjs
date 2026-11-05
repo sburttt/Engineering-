@@ -37,7 +37,7 @@ async function newPage(viewport) {
 }
 const state = (page) => page.evaluate(() => {
   const s = window.__nightfall.store.getState();
-  return { tab: s.tab, mode: s.mode, pitch: s.pitch, selectedId: s.selectedId, focusId: s.focusId, isolate: s.isolate, cutaway: s.cutaway, explode: s.explode, payloadId: s.payloadId, preset: s.preset, bayOpen: s.bayOpen, renderStatus: s.renderStatus };
+  return { tab: s.tab, mode: s.mode, render: s.render, explodeAsm: s.explodeAsm, cinema: s.cinema, cinemaPlaying: s.cinemaPlaying, pitch: s.pitch, selectedId: s.selectedId, focusId: s.focusId, isolate: s.isolate, cutaway: s.cutaway, explode: s.explode, payloadId: s.payloadId, preset: s.preset, bayOpen: s.bayOpen, renderStatus: s.renderStatus };
 });
 /** Click on triangles of a component's real geometry (projected to screen) until the expected selection happens. */
 async function pickComponent(page, id, ok) {
@@ -133,17 +133,17 @@ await shot(page, '01-hero');
 let st = await state(page);
 check('Opens directly on the aircraft viewer (Hero preset)', st.tab === 'aircraft' && st.preset === 'hero');
 check('Model is built from many named parts', (await page.evaluate(() => window.__nightfall.parts)) > 100);
-check('Opening caption shows the NIGHTFALL designation', (await page.locator('.caption-wrap.on .nf-title').count()) === 1);
+check('Left rail shows the NIGHTFALL designation and modes', (await page.locator('.rail .nf-title').isVisible()) && (await page.locator('.rail-list button').count()) >= 13);
 check('CORVANE logo is in the header', (await page.locator('.hdr .brand svg[aria-label="Corvane emblem"]').count()) === 1);
 let r = await aircraftRect(page);
 check('Hero frame: aircraft uncropped and dominant', r.x0 > 0 && r.y0 > 0 && r.x1 < r.w && r.y1 < r.h && (r.x1 - r.x0) / r.w > 0.45, `spans ${Math.round(r.x0)}–${Math.round(r.x1)} of ${r.w}px`);
 
 // Presets: direction and framing
-const DIRS = { Front: [1, 0, 0], Side: [0, 0, 1], Top: [0, 1, 0], Rear: [-1, 0, 0], Under: [0, -1, 0], Hero: [0.67, 0.27, 0.69] };
-for (const label of ['Front', 'Side', 'Top', 'Rear', 'Under', 'Hero']) {
+const DIRS = { Front: [1, 0, 0], Side: [0, 0, 1], Top: [0, 1, 0], Rear: [-1, 0, 0], Under: [0, -1, 0], Detail: [0.68, 0.32, 0.66], 'Three-quarter': [0.67, 0.27, 0.69] };
+for (const label of ['Front', 'Side', 'Top', 'Rear', 'Under', 'Detail', 'Three-quarter']) {
   await presetBtn(page, label).click();
   await settle(page, 2200);
-  await shot(page, `02-preset-${label.toLowerCase()}`);
+  await shot(page, `02-preset-${label.toLowerCase().replace(/[^a-z]/g, '')}`);
   const c = await camState(page);
   const d = c.p.map((v, i) => v - c.t[i]);
   const len = Math.hypot(...d);
@@ -151,7 +151,7 @@ for (const label of ['Front', 'Side', 'Top', 'Rear', 'Under', 'Hero']) {
   const wl = Math.hypot(...want);
   const dot = d.reduce((a, v, i) => a + (v / len) * (want[i] / wl), 0);
   r = await aircraftRect(page);
-  const inFrame = r.x0 > -2 && r.y0 > -2 && r.x1 < r.w + 2 && r.y1 < r.h + 2;
+  const inFrame = label === 'Detail' || (r.x0 > -2 && r.y0 > -2 && r.x1 < r.w + 2 && r.y1 < r.h + 2);
   check(`Preset ${label}: correct direction and whole aircraft in frame`, dot > 0.97 && inFrame, `dot ${dot.toFixed(3)}, x ${Math.round(r.x0)}–${Math.round(r.x1)}, y ${Math.round(r.y0)}–${Math.round(r.y1)}`);
 }
 check('Preset state follows the selected view', (await state(page)).preset === 'hero');
@@ -169,7 +169,7 @@ await settle(page, 900);
 st = await state(page);
 const afterOrbit = await camState(page);
 check('Drag orbits the camera without selecting', st.selectedId === null && Math.hypot(...afterOrbit.p.map((v, i) => v - before.p[i])) > 1, `moved ${Math.hypot(...afterOrbit.p.map((v, i) => v - before.p[i])).toFixed(2)} m`);
-check('Exploring hides the opening caption (free orbit)', st.preset === null && (await page.locator('.caption-wrap.on').count()) === 0);
+check('Orbiting switches the view label to free orbit', st.preset === null && /free orbit/i.test(await page.locator('.vstatus').innerText()));
 
 // Zoom: wheel, limits, never inside the airframe
 await page.mouse.move(cx, cy);
@@ -184,7 +184,7 @@ const inside = await page.evaluate(() => ({ d: window.__nightfall.camera.positio
 check('Zoom stops at a minimum distance', inside.d >= 1.15, `${inside.d.toFixed(2)} m`);
 await shot(page, '03-zoomed-in');
 await settle(page, 1500);
-await page.locator('.tools').getByRole('button', { name: 'Reset view' }).click();
+await page.locator('.bb-tools').getByRole('button', { name: 'Reset view' }).click();
 await settle(page, 2400);
 {
   const s1 = await state(page);
@@ -250,7 +250,7 @@ await page.keyboard.press('Escape');
 check('Esc clears the selection', (await state(page)).selectedId === null);
 
 // Component index
-await page.locator('.tools').getByRole('button', { name: /Components/ }).click();
+await page.locator('.rail').getByRole('button', { name: /All components/ }).click();
 await page.locator('.index-panel').getByRole('button', { name: /Nose Landing Gear/ }).click();
 await settle(page, 2000);
 check('Component index selects and locates a part', (await state(page)).selectedId === 'gear-nose');
@@ -259,18 +259,20 @@ await page.locator('.index-panel').getByRole('button', { name: 'Close component 
 await page.keyboard.press('Escape');
 
 // Modes
-await page.locator('.mode-index').getByRole('button', { name: /Cutaway/ }).click();
+await page.locator('.rail .seg').getByRole('button', { name: 'Cutaway' }).click();
 await settle(page, 2000);
 check('Cutaway mode clips the shell', (await state(page)).cutaway === 'partial');
 await shot(page, '08-cutaway');
 const cutHit = await pickComponent(page, 'power', (id) => id === 'power');
 check('Cutaway: clicks reach modules behind the removed skin', cutHit === 'power', cutHit ?? 'none');
 await page.keyboard.press('Escape');
-await page.locator('.mode-index').getByRole('button', { name: /Systems/ }).click();
+await page.locator('.rail .seg').getByRole('button', { name: 'Closed' }).click();
+await page.locator('.rail-list').getByRole('button', { name: /Transparent/ }).click();
+await page.locator('.bb-tools').getByRole('button', { name: 'Reset view' }).click();
 await settle(page, 2000);
-check('Systems mode ghosts the shell', (await state(page)).cutaway === 'internal');
+check('Transparent mode ghosts the shell', (await state(page)).cutaway === 'internal' && (await state(page)).render === 'xray');
 const navHit = await pickComponent(page, 'nav', (id) => id === 'nav');
-check('Systems: internal modules are selectable in 3D', navHit === 'nav', navHit ?? 'none');
+check('Transparent: internal modules are selectable in 3D', navHit === 'nav', navHit ?? 'none');
 await page.keyboard.press('Escape');
 await page.locator('.tools-toggle').click();
 await page.locator('#explode').fill('1');
@@ -278,10 +280,10 @@ await settle(page, 2200);
 await shot(page, '09-exploded');
 const moved = await page.evaluate(() => [...window.__nightfall.registry.get('wing-stbd')][0].parent.position.z);
 check('Exploded view separates assemblies', moved > 1, `wing offset ${moved.toFixed(2)} m`);
-await page.locator('.mode-index').getByRole('button', { name: /Exterior/ }).click();
+await page.locator('.rail-list').getByRole('button', { name: /Realistic/ }).click();
 await settle(page, 2200);
 const back = await page.evaluate(() => [...window.__nightfall.registry.get('wing-stbd')][0].parent.position.length());
-check('Leaving systems re-assembles the aircraft', back < 0.02 && (await state(page)).cutaway === 'exterior', `residual ${back.toFixed(3)} m`);
+check('Leaving transparent mode re-assembles the aircraft', back < 0.02 && (await state(page)).cutaway === 'exterior', `residual ${back.toFixed(3)} m`);
 if ((await page.locator('.pop').count()) === 0) await page.locator('.tools-toggle').click();
 await page.locator('#pitch').fill('20');
 await page.locator('#roll').fill('12');
@@ -293,7 +295,7 @@ await settle(page, 1500);
 st = await state(page);
 check('Reset viewer restores the opening state', st.preset === 'hero' && st.pitch === 0 && st.mode === 'exterior' && st.selectedId === null, JSON.stringify({ p: st.preset, m: st.mode, s: st.selectedId }));
 
-await page.locator('.mode-index').getByRole('button', { name: /Payload/ }).click();
+await page.locator('.rail .seg').getByRole('button', { name: 'Bay open' }).click();
 await settle(page, 2600);
 st = await state(page);
 check('Payload mode opens the bay with the fitted module', st.bayOpen && st.selectedId === 'payload-map');
@@ -304,8 +306,93 @@ const sciVisible = await page.evaluate(() => [...window.__nightfall.registry.get
 const mapHidden = await page.evaluate(() => [...window.__nightfall.registry.get('payload-map')].every((o) => !o.parent.visible));
 check('Swapping the mission module changes the model', (await state(page)).payloadId === 'payload-sci' && sciVisible && mapHidden);
 await page.keyboard.press('Escape');
-await page.locator('.mode-index').getByRole('button', { name: /Exterior/ }).click();
+await page.locator('.rail .seg').getByRole('button', { name: 'Closed' }).click();
 await settle(page, 1500);
+
+// Render modes on one model
+const surfaceMats = () => page.evaluate(() => [...window.__nightfall.registry.get('wing-stbd')].map((o) => o.material.colorWrite));
+await page.locator('.rail-list').getByRole('button', { name: /Wireframe/ }).click();
+await settle(page, 1500);
+const edges = await page.evaluate(() => [...window.__nightfall.registry.get('wing-stbd')].some((o) => o.parent.children.some((c) => c.isLineSegments && c.visible)));
+check('Wireframe: hidden-line edges over depth-only surfaces', (await surfaceMats()).every((c) => c === false) && edges);
+await shot(page, '10b-wireframe');
+await page.locator('.rail-list').getByRole('button', { name: /Blueprint/ }).click();
+await settle(page, 3000);
+const bp = await page.evaluate(() => ({ zoom: window.__nightfall.camera.zoom, bg: '#' + window.__nightfall.camera.parent?.background?.getHexString?.() }));
+st = await state(page);
+check('Blueprint: long lens, side elevation, navy sheet', Math.abs(bp.zoom - 3.4) < 0.05 && st.preset === 'side' && (await page.locator('.bp-grid').count()) === 1, JSON.stringify(bp));
+check('Blueprint: dimension guides show the model measurements', /LENGTH/.test(await page.locator('.callouts').innerHTML()) && /14\.2/.test(await page.locator('.callouts').innerHTML()));
+check('Blueprint: component labels carry ID numbers', (await page.locator('.callouts .co').count()) >= 4 && /NF-1\d\d/.test(await page.locator('.callouts').innerHTML()));
+r = await aircraftRect(page);
+check('Blueprint: aircraft fills the sheet (lens keeps framing)', (r.x1 - r.x0) / r.w > 0.35 && r.x0 > 0 && r.x1 < r.w, `${Math.round(r.x0)}–${Math.round(r.x1)}`);
+await shot(page, '10c-blueprint');
+await presetBtn(page, 'Top').click();
+await settle(page, 2200);
+await shot(page, '10d-blueprint-top');
+await page.locator('.rail-list').getByRole('button', { name: /Realistic/ }).click();
+await settle(page, 2500);
+check('Back to realistic restores the normal lens', Math.abs((await page.evaluate(() => window.__nightfall.camera.zoom)) - 1) < 0.02);
+
+// Exploded assembly
+await presetBtn(page, 'Three-quarter').click();
+await settle(page, 1800);
+const camPre = await camState(page);
+await page.locator('.rail-asm').getByRole('button', { name: 'Starboard wing' }).click();
+await settle(page, 3200);
+st = await state(page);
+const asmT = await page.evaluate(() => window.__nightfall.anim.asmT);
+const elevonMove = await page.evaluate(() => [...window.__nightfall.registry.get('elevon-stbd-out')][0].parent.parent.position.length());
+check('Exploded assembly separates its parts in a controlled move', st.explodeAsm === 'asm-wing' && asmT > 0.99 && elevonMove > 0.5, `asmT ${asmT.toFixed(2)}, elevon ${elevonMove.toFixed(2)} m`);
+const ctxGhost = await page.evaluate(() => [...window.__nightfall.registry.get('fwd-fuselage')][0].material.opacity);
+check('Exploded assembly dims the rest of the aircraft', ctxGhost < 0.2, `context opacity ${ctxGhost}`);
+const labels = await page.locator('.callouts .co').evaluateAll((els) => els.map((e) => e.textContent));
+check('Each separated part is labelled with its ID', labels.length >= 4 && labels.every((t) => /NF-\d/.test(t)), labels.join(' | ').slice(0, 160));
+await shot(page, '10e-exploded-wing');
+await page.locator('.rail-asm').getByRole('button', { name: 'Mission systems' }).click();
+await settle(page, 4200);
+st = await state(page);
+const sysLift = await page.evaluate(() => [...window.__nightfall.registry.get('nav')][0].parent.position.y);
+check('Switching assembly closes one and opens the next', st.explodeAsm === 'asm-systems' && sysLift > 1, `nav lift ${sysLift.toFixed(2)} m`);
+await shot(page, '10f-exploded-systems');
+await page.locator('.focus-bar').getByRole('button', { name: /Reassemble/ }).click();
+await settle(page, 2600);
+const restIn = await page.evaluate(() => window.__nightfall.anim.asmT);
+const camBackAsm = await camState(page);
+check('Reassemble restores the aircraft and the camera', restIn === 0 && (await state(page)).explodeAsm === null && Math.hypot(...camBackAsm.p.map((v, i) => v - camPre.p[i])) < 0.4);
+
+// Callout on selection
+await pickComponent(page, 'fairing', (id) => id === 'fairing');
+await settle(page, 900);
+const selCo = await page.locator('.callouts .co').evaluateAll((els) => els.map((e) => e.textContent));
+check('Selecting a part draws one ID callout with a leader line', selCo.length === 1 && /NF-150/.test(selCo[0]) && (await page.locator('.callouts .co polyline').count()) === 1, selCo.join('|'));
+check('Information panel shows the component ID', /NF-150/.test(await page.locator('.cp').innerText()));
+await page.keyboard.press('Escape');
+
+// Cinematic presentation
+await page.locator('.bottombar').getByRole('button', { name: /Presentation/ }).click();
+await settle(page, 2500);
+st = await state(page);
+const t1 = await page.evaluate(() => window.__nightfall.cine.t);
+check('Presentation starts playing with the interface reduced', st.cinema && st.cinemaPlaying && t1 > 0.5 && (await page.locator('.rail').count()) === 0, `t=${t1.toFixed(1)}`);
+check('Scene 01 introduces the CORVANE brand', /Introduction/i.test(await page.locator('.cine-scene').innerText()));
+await page.locator('.cine-controls').getByRole('button', { name: 'Pause' }).click();
+const tp = await page.evaluate(() => window.__nightfall.cine.t);
+await settle(page, 900);
+check('Pause holds the timeline', Math.abs((await page.evaluate(() => window.__nightfall.cine.t)) - tp) < 0.05);
+const track = await page.locator('.cine-track').boundingBox();
+await page.mouse.click(track.x + track.width * (41 / 58), track.y + track.height / 2);
+await settle(page, 2500);
+st = await state(page);
+check('Scrubbing jumps to the engineering scene (transparent shell, systems callouts)', /Engineering/i.test(await page.locator('.cine-scene').innerText()) && st.render === 'xray' && (await page.locator('.callouts .co').count()) >= 3);
+await shot(page, '10g-cinema-engineering');
+await page.mouse.click(track.x + track.width * (56 / 58), track.y + track.height / 2);
+await settle(page, 2500);
+check('Final scene shows the NIGHTFALL end card', (await page.locator('.cine-end').count()) === 1 && (await state(page)).render === 'real');
+await shot(page, '10h-cinema-end');
+await page.keyboard.press('Escape');
+await settle(page, 1500);
+st = await state(page);
+check('Exit returns to the interactive viewer', !st.cinema && st.preset === 'hero' && (await page.locator('.rail').count()) === 1);
 
 // Full-screen inspection
 await page.locator('.hdr').getByRole('button', { name: /Inspect/ }).click();
@@ -412,8 +499,8 @@ await settle(m, 2500);
 await shot(m, '30-phone-hero');
 check('Phone: no horizontal page scroll', !(await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)));
 r = await aircraftRect(m);
-check('Phone: whole aircraft visible above the caption', r.x0 > -2 && r.x1 < r.w + 2 && r.y0 > 0, `x ${Math.round(r.x0)}–${Math.round(r.x1)} of ${r.w}`);
-check('Phone: brand and NIGHTFALL visible', (await m.locator('.hdr .brand').isVisible()) && (await m.locator('.nf-title').isVisible()));
+check('Phone: whole aircraft visible', r.x0 > -2 && r.x1 < r.w + 2 && r.y0 > 0, `x ${Math.round(r.x0)}–${Math.round(r.x1)} of ${r.w}`);
+check('Phone: brand and NIGHTFALL visible', (await m.locator('.hdr .brand').isVisible()) && (await m.locator('.m-id .nf-title').isVisible()));
 const cdp = await ctx.newCDPSession(m);
 const box = await m.locator('.viewport canvas').boundingBox();
 const tx = box.x + box.width / 2;
@@ -431,7 +518,7 @@ await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }
 await settle(m, 900);
 const c2 = await camState(m);
 check('Phone: pinch zooms in', c2.d < c1.d - 0.5, `${c1.d.toFixed(1)} → ${c2.d.toFixed(1)} m`);
-await m.locator('.presets').getByRole('button', { name: 'Hero', exact: true }).tap();
+await m.locator('.presets').getByRole('button', { name: 'Three-quarter', exact: true }).tap();
 await settle(m, 2000);
 const mp = await pickComponent(m, 'ctr-body', (id) => !!id);
 check('Phone: tapping the model selects a part', !!mp, mp ?? 'none');

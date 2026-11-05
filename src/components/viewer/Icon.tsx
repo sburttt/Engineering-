@@ -12,6 +12,10 @@ const PATHS: Record<string, string> = {
   focus: 'M8 2v2.5 M8 11.5V14 M2 8h2.5 M11.5 8H14 M8 5.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5',
   back: 'M9.5 3.5L5 8l4.5 4.5',
   arrow: 'M3 8h10 M9 4l4 4-4 4',
+  play: 'M5 3.2v9.6L12.8 8z',
+  pause: 'M5.5 3.5v9 M10.5 3.5v9',
+  replay: 'M3.4 8a4.6 4.6 0 1 0 1.4-3.3 M4.6 2.4v2.6h2.6',
+  explode: 'M8 2v3.5 M8 10.5V14 M2 8h3.5 M10.5 8H14 M6.2 6.2h3.6v3.6H6.2z',
 };
 
 export function Icon({ name, size = 16 }: { name: keyof typeof PATHS | string; size?: number }) {

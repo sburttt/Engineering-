@@ -235,13 +235,15 @@ export function TechnicalOverview() {
               <dt>Pan</dt>
               <dd>Right-drag or two-finger drag</dd>
               <dt>Views</dt>
-              <dd>Hero, Front, Side, Top, Rear, Under (keys 1–6), R to reset</dd>
+              <dd>Front, Side, Top, Rear, Three-quarter, Detail, Under (keys 1–7), R to reset</dd>
+              <dt>Render</dt>
+              <dd>Realistic, Transparent, Wireframe (W) and Blueprint (B), all drawn from the same model</dd>
+              <dt>Assemblies</dt>
+              <dd>Nine exploded presentations with ID-numbered labels; Reassemble or Esc returns</dd>
               <dt>Inspect</dt>
-              <dd>Select a part, then use Focus view; Esc returns</dd>
-              <dt>Modes</dt>
-              <dd>Exterior, Cutaway, Systems (with exploded view) and Payload</dd>
-              <dt>Full screen</dt>
-              <dd>Inspect, or F</dd>
+              <dd>Select a part for its ID, callout and description, then Focus view</dd>
+              <dt>Presentation</dt>
+              <dd>A 58-second, five-scene cinematic sequence with a scrubbable timeline (Space pauses)</dd>
             </dl>
           </div>
           <button className="cta" onClick={() => setTab('aircraft')}>

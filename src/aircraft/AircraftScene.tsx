@@ -5,7 +5,9 @@ import * as THREE from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { AircraftModel } from './AircraftModel';
 import { Animator } from './Animator';
-import { boundsOf, publishView } from './runtime';
+import { anim, boundsOf, boundsOfAll, publishView, view } from './runtime';
+import { ASSEMBLY_MAP } from '../data/assemblies';
+import { DURATION, cine, lightAt, poseAt, stateAt } from './cinema';
 import { GROUND_Y, HALF_SPAN, clamp, hLo, hUp, xLE, xTE } from './geometry/airframe';
 import { useStore } from '../state/store';
 import { PRESETS } from './presets';
@@ -13,6 +15,10 @@ import { COMPONENT_MAP } from '../data/components';
 
 export const TARGET0 = new THREE.Vector3(0.2, -0.15, 0);
 const BG = '#0b0c0e';
+/** Scene background per render mode. */
+export const BACKGROUND = { real: '#0b0c0e', xray: '#0a0c0f', wire: '#0d0f12', blueprint: '#0b1d33' } as const;
+/** Long lens for the blueprint: the same model read almost orthographically. */
+const lensFor = (r: string) => (r === 'blueprint' ? 3.4 : 1);
 
 /** `?render=low` lowers resolution and drops shadows (used by automated tests on software GL). */
 const LOW_POWER = (() => {
@@ -91,6 +97,9 @@ function CameraRig() {
     const t = pr.target ? new THREE.Vector3(...pr.target) : TARGET0.clone();
     const rel = new THREE.Vector3(...pr.pos).sub(t);
     const { width, height } = get().size;
+    // distances follow the lens currently on the camera; a lens change rescales moves in flight.
+    // Blueprint sheets keep wider margins for labels and dimension lines.
+    rel.multiplyScalar(camera.zoom * (useStore.getState().render === 'blueprint' ? 1.3 : 1));
     return { t, rel, p: rel.clone().multiplyScalar(aspectScale(width, height)).add(t) };
   };
 
@@ -98,7 +107,7 @@ function CameraRig() {
   useEffect(() => {
     if (!controls) return;
     const s = useStore.getState();
-    const id = s.mode === 'cutaway' || s.mode === 'systems' ? 'internal' : 'hero';
+    const id = s.mode === 'cutaway' || s.render === 'xray' ? 'internal' : s.render === 'blueprint' ? 'side' : 'hero';
     const { t, rel, p } = presetPose(id);
     if (s.mode === 'payload') {
       useStore.setState({ cameraRequest: { kind: 'fit', id: 'bay', mode: 'locate', nonce: -1 } });
@@ -124,7 +133,7 @@ function CameraRig() {
     const dur = REDUCED_MOTION ? 0.001 : 1.05;
     if (req.kind === 'zoom') {
       const d = p0.clone().sub(t0);
-      const len = THREE.MathUtils.clamp(d.length() * req.factor, 1.2, 95);
+      const len = THREE.MathUtils.clamp(d.length() * req.factor, 1.2, 95 * lensFor(useStore.getState().render));
       move.current = { p0, p1: t0.clone().add(d.setLength(len)), t0, t1: t0.clone(), t: 0, start: performance.now(), dur: REDUCED_MOTION ? 0.001 : 0.35, ease: easeInOut };
       return;
     }
@@ -135,7 +144,8 @@ function CameraRig() {
         move.current = { p0, p1: back.pos, t0, t1: back.target, t: 0, start: performance.now(), dur, ease: easeInOut };
         return;
       }
-      const id = useStore.getState().mode === 'cutaway' || useStore.getState().mode === 'systems' ? 'internal' : 'hero';
+      const st = useStore.getState();
+      const id = st.mode === 'cutaway' || st.render === 'xray' ? 'internal' : st.render === 'blueprint' ? 'side' : 'hero';
       const { t, rel, p } = presetPose(id);
       move.current = { p0, p1: p, t0, t1: t, t: 0, start: performance.now(), dur, rel, ease: easeInOut };
       return;
@@ -146,18 +156,38 @@ function CameraRig() {
       move.current = { p0, p1: p, t0, t1: t, t: 0, start: performance.now(), dur, rel, ease: easeInOut };
       return;
     }
+    const fitDistance = (r: number) => {
+      const fov = (camera.fov * Math.PI) / 180;
+      const { width, height } = get().size;
+      const half = Math.min(fov / 2, Math.atan(Math.tan(fov / 2) * (width / Math.max(height, 1))));
+      return (r / Math.sin(half)) * camera.zoom;
+    };
+    if (req.kind === 'assembly') {
+      const a = ASSEMBLY_MAP[req.id];
+      const box = a && boundsOfAll(a.members);
+      if (!box) return;
+      if (!saved.current) saved.current = { pos: p0.clone(), target: t0.clone() };
+      const sphere = box.getBoundingSphere(new THREE.Sphere());
+      // leave room for the separated parts and their labels
+      const r = Math.max(sphere.radius, 0.6) + 1.1;
+      const centre = sphere.center.clone();
+      if (a.style === 'explicit') {
+        const lift = Object.values(a.offsets ?? {}).reduce((m, o) => m.add(new THREE.Vector3(...o)), new THREE.Vector3());
+        centre.addScaledVector(lift, 0.5 / Math.max(1, a.members.length));
+      }
+      const dist = Math.max(fitDistance(r) * 1.18, 3);
+      move.current = { p0, p1: centre.clone().add(new THREE.Vector3(...a.view).normalize().multiplyScalar(dist)), t0, t1: centre, t: 0, start: performance.now(), dur: REDUCED_MOTION ? 0.001 : 1.3, ease: easeInOut };
+      return;
+    }
     // fit
     const box = boundsOf(req.id);
     if (!box) return;
     if (req.mode === 'focus' && !saved.current) saved.current = { pos: p0.clone(), target: t0.clone() };
     const sphere = box.getBoundingSphere(new THREE.Sphere());
     const r = Math.max(sphere.radius, 0.35);
-    const fov = (camera.fov * Math.PI) / 180;
-    const { width, height } = get().size;
     // fit against whichever field of view (vertical or horizontal) is narrower
-    const half = Math.min(fov / 2, Math.atan(Math.tan(fov / 2) * (width / Math.max(height, 1))));
-    const fit = r / Math.sin(half);
-    const dist = Math.max(req.mode === 'focus' ? fit * 1.12 : Math.max(fit * 1.6, 10), 1.5);
+    const fit = fitDistance(r);
+    const dist = Math.max(req.mode === 'focus' ? fit * 1.12 : Math.max(fit * 1.6, 10 * camera.zoom), 1.5);
     const s = useStore.getState();
     const rec = COMPONENT_MAP[req.id];
     const hint = VIEW_HINT[req.id] ?? (req.id.startsWith('payload-') ? VIEW_HINT.bay : undefined);
@@ -183,12 +213,56 @@ function CameraRig() {
       if (all) return hits.slice(0, 8).map(fmt);
       return hits[0] ? fmt(hits[0]) : null;
     };
-    w.__nightfall = { ...(w.__nightfall ?? {}), camera, controls, probe };
+    w.__nightfall = { ...(w.__nightfall ?? {}), camera, controls, probe, cine };
   }, [camera, controls, scene]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tmp = useMemo(() => new THREE.Vector3(), []);
-  useFrame(() => {
+  const wasCinema = useRef(false);
+  useFrame((_, frameDt) => {
     if (!controls) return;
+    const st = useStore.getState();
+    view.camera = camera;
+    view.width = get().size.width;
+    view.height = get().size.height;
+    // Cinematic presentation: the timeline owns the camera.
+    if (st.cinema) {
+      wasCinema.current = true;
+      move.current = null;
+      controls.enabled = false;
+      if (camera.zoom !== 1) {
+        camera.zoom = 1;
+        camera.updateProjectionMatrix();
+      }
+      const pose = poseAt(cine.t);
+      const tg0 = new THREE.Vector3(...pose.target);
+      const { width, height } = get().size;
+      camera.position.set(...pose.pos).sub(tg0).multiplyScalar(aspectScale(width, height)).add(tg0);
+      controls.target.copy(tg0);
+      camera.lookAt(tg0);
+      return;
+    }
+    if (wasCinema.current) {
+      wasCinema.current = false;
+      controls.enabled = true;
+    }
+    // Blueprint lens: change focal length while keeping the framing (distance scales with zoom).
+    const L = lensFor(st.render);
+    if (Math.abs(camera.zoom - L) > 1e-4) {
+      const z0 = camera.zoom;
+      const k = 1 - Math.exp(-Math.min(frameDt, 0.5) * 7);
+      const z1 = REDUCED_MOTION ? L : z0 + (L - z0) * k + Math.sign(L - z0) * 0.004;
+      const z = (L - z0) * (L - z1) <= 0 ? L : z1;
+      tmp.copy(camera.position).sub(controls.target).multiplyScalar(z / z0);
+      camera.position.copy(controls.target).add(tmp);
+      if (move.current) {
+        const k = z / z0;
+        for (const [pv, tv] of [[move.current.p0, move.current.t0], [move.current.p1, move.current.t1]] as const) pv.sub(tv).multiplyScalar(k).add(tv);
+        if (move.current.rel) move.current.rel.multiplyScalar(k);
+      }
+      camera.zoom = z;
+      camera.updateProjectionMatrix();
+      controls.maxDistance = 95 * Math.max(z, 1);
+    }
     const a = move.current;
     if (a) {
       // wall-clock progress: moves finish on time even when the frame rate is low
@@ -208,7 +282,7 @@ function CameraRig() {
     const tg = controls.target;
     tg.set(clamp(tg.x, -9, 9), clamp(tg.y, -2.2, 3), clamp(tg.z, -10, 10));
     // Never let the camera pass into the closed airframe (systems views may go inside).
-    if (useStore.getState().cutaway === 'exterior' && insideAirframe(camera.position)) {
+    if (st.cutaway === 'exterior' && st.render === 'real' && !st.explodeAsm && insideAirframe(camera.position)) {
       tmp.copy(camera.position).sub(tg);
       const len0 = Math.max(tmp.length(), 0.5);
       let len = len0;
@@ -236,11 +310,14 @@ function FrameOffset() {
     const cam = state.camera as THREE.PerspectiveCamera;
     const { width, height } = state.size;
     const s = useStore.getState();
-    const panelOpen = !!s.selectedId && !s.immersive;
+    const panelOpen = !!s.selectedId && !s.immersive && !s.cinema;
     let want = { x: 0, y: 0 };
-    if (width > 900) {
-      if (panelOpen) want = { x: -170 / width, y: 0 };
-      else if (!s.immersive) want = { x: 0, y: 0.03 };
+    if (s.cinema) want = { x: 0, y: 0 };
+    else if (width > 900) {
+      // the left rail takes ~250 px; the information panel ~360 px on the right
+      const left = s.immersive ? 0 : 250;
+      const right = panelOpen ? 380 : 0;
+      want = { x: (left - right) / 2 / width, y: s.immersive ? 0 : 0.02 };
     } else if (!s.immersive) want = { x: 0, y: panelOpen ? 0.2 : 0.07 };
     const k = REDUCED_MOTION ? 1 : 1 - Math.exp(-dt * 5);
     const c = cur.current;
@@ -280,8 +357,9 @@ function Floor() {
   const group = useRef<THREE.Group>(null);
   const { camera } = useThree();
   const pool = useMemo(floorPoolTexture, []);
+  const render = useStore((s) => s.render);
   useFrame(() => {
-    if (group.current) group.current.visible = camera.position.y > GROUND_Y + 0.05;
+    if (group.current) group.current.visible = camera.position.y > GROUND_Y + 0.05 && (render === 'real' || render === 'xray');
   });
   return (
     <group ref={group}>
@@ -320,6 +398,17 @@ function Floor() {
  */
 function Lights() {
   const key = useRef<THREE.DirectionalLight>(null);
+  const rig = useRef<THREE.Group>(null);
+  const base = useRef<number[] | null>(null);
+  const scene = useThree((st) => st.scene);
+  useFrame(() => {
+    const g = rig.current;
+    if (!g) return;
+    const lights = g.children.filter((o) => (o as THREE.Light).isLight) as THREE.Light[];
+    if (!base.current) base.current = lights.map((l) => l.intensity);
+    lights.forEach((l, i) => (l.intensity = base.current![i] * anim.light));
+    scene.environmentIntensity = anim.light;
+  });
   useEffect(() => {
     const l = key.current;
     if (!l) return;
@@ -332,7 +421,7 @@ function Lights() {
     l.shadow.radius = 3;
   }, []);
   return (
-    <>
+    <group ref={rig}>
       <ambientLight intensity={0.06} />
       <hemisphereLight args={['#d9dee3', '#2a2e33', 0.34]} />
       <directionalLight ref={key} position={[9, 16, 8]} intensity={2.1} color="#fff7ee" castShadow={!LOW_POWER} />
@@ -350,8 +439,39 @@ function Lights() {
         <Lightformer form="rect" intensity={0.55} color="#c6d0d8" position={[15, 0.4, -2]} rotation-y={-Math.PI / 2} scale={[9, 2.2, 1]} />
         <Lightformer form="rect" intensity={0.95} color="#a3acb5" position={[0, -7, 0]} rotation-x={-Math.PI / 2} scale={[24, 12, 1]} />
       </Environment>
-    </>
+    </group>
   );
+}
+
+/** Background and atmosphere for each render mode. */
+function SceneLook() {
+  const render = useStore((s) => s.render);
+  const scene = useThree((st) => st.scene);
+  useEffect(() => {
+    scene.background = new THREE.Color(BACKGROUND[render]);
+    scene.fog = render === 'real' || render === 'xray' ? new THREE.Fog(BACKGROUND[render], 38, 90) : null;
+  }, [render, scene]);
+  return null;
+}
+
+/** Advances the presentation clock and applies the timeline's render state and light level. */
+function CinemaDriver() {
+  useFrame((_, dt) => {
+    const s = useStore.getState();
+    if (!s.cinema) {
+      if (anim.light !== 1) anim.light = Math.min(1, anim.light + dt * 1.5);
+      return;
+    }
+    if (s.cinemaPlaying) {
+      cine.t = Math.min(DURATION, cine.t + Math.min(dt, 0.5));
+      if (cine.t >= DURATION) s.setCinemaPlaying(false);
+    }
+    anim.light = lightAt(cine.t);
+    const want = stateAt(cine.t);
+    if (s.render !== want.render) s.setRender(want.render);
+    if (Math.abs(s.explode - want.explode) > 1e-3) s.setExplode(want.explode);
+  });
+  return null;
 }
 
 function ControlsBinding() {
@@ -382,7 +502,7 @@ export default function AircraftScene({ active = true }: { active?: boolean }) {
       frameloop={active ? 'always' : 'never'}
       dpr={LOW_POWER ? 0.5 : [1, 2]}
       shadows={!LOW_POWER}
-      camera={{ fov: 32, position: PRESETS.hero.pos, near: 0.1, far: 300 }}
+      camera={{ fov: 32, position: PRESETS.hero.pos, near: 0.1, far: 1200 }}
       gl={{ antialias: true, powerPreference: 'high-performance' }}
       onCreated={({ gl }) => {
         gl.localClippingEnabled = true;
@@ -393,7 +513,8 @@ export default function AircraftScene({ active = true }: { active?: boolean }) {
       onPointerMissed={() => useStore.getState().hover(null)}
     >
       <color attach="background" args={[BG]} />
-      <fog attach="fog" args={[BG, 38, 90]} />
+      <SceneLook />
+      <CinemaDriver />
       <Lights />
       <Floor />
       <Animator />

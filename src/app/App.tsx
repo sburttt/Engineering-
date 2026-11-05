@@ -113,6 +113,7 @@ export default function App() {
   const status = useStore((s) => s.renderStatus);
   const immersive = useStore((s) => s.immersive);
   const selected = useStore((s) => s.selectedId);
+  const busy = useStore((s) => !!s.explodeAsm || !!s.focusId);
   const [gl] = useState(webglAvailable);
   useHashRouting();
   useKeyboardShortcuts();
@@ -131,7 +132,7 @@ export default function App() {
   };
 
   return (
-    <div className={`app tab-${tab} ${immersive ? 'is-immersive' : ''} ${selected ? 'has-sel' : ''}`}>
+    <div className={`app tab-${tab} ${immersive ? 'is-immersive' : ''} ${selected ? 'has-sel' : ''} ${busy ? 'has-asm' : ''}`}>
       <Header />
       <main className="main">
         <div className={`stage ${showScene ? '' : 'hidden'}`} aria-hidden={!showScene}>

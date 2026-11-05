@@ -2,6 +2,7 @@ import { useStore } from '../../state/store';
 import { COMPONENT_MAP, chainOf, childrenOf, type ComponentRecord } from '../../data/components';
 import { EQUIPMENT_MODULES } from '../../data/equipmentModules';
 import { Icon } from '../viewer/Icon';
+import { assemblyOf, codeOf } from '../../data/assemblies';
 
 function InterfaceDiagram({ c }: { c: ComponentRecord }) {
   const select = useStore((s) => s.select);
@@ -71,6 +72,8 @@ export function Inspector() {
   const setTab = useStore((s) => s.setTab);
   const setPayload = useStore((s) => s.setPayload);
   const payloadId = useStore((s) => s.payloadId);
+  const render = useStore((s) => s.render);
+  const setExplodeAsm = useStore((s) => s.setExplodeAsm);
 
   const c = selectedId ? COMPONENT_MAP[selectedId] : null;
   if (!c) return null;
@@ -85,7 +88,7 @@ export function Inspector() {
     <div className="cp" role="region" aria-label={`Component: ${c.name}`}>
       <div className="cp-head">
         <span className="cp-kicker">
-          {GROUP_NAME[c.group]} · {c.category}
+          <b className="cp-code">{codeOf(c.id)}</b> {GROUP_NAME[c.group]} · {c.category}
         </span>
         <button className="icon-btn" onClick={() => select(null)} aria-label="Clear selection" title="Clear selection (Esc)">
           <Icon name="close" />
@@ -122,7 +125,20 @@ export function Inspector() {
         >
           Isolate
         </button>
+        {assemblyOf(c.id) && (
+          <button className="chk" onClick={() => setExplodeAsm(assemblyOf(c.id)!.id)} title={`Exploded view: ${assemblyOf(c.id)!.name}`}>
+            Explode
+          </button>
+        )}
       </div>
+      <dl className="cp-meta">
+        <dt>ID</dt>
+        <dd className="mono">{codeOf(c.id)}</dd>
+        <dt>Location</dt>
+        <dd>{c.location === 'external' ? 'Exterior' : 'Internal'}</dd>
+        <dt>View</dt>
+        <dd>{{ real: 'Realistic', xray: 'Transparent', wire: 'Wireframe', blueprint: 'Blueprint' }[render]}</dd>
+      </dl>
 
       <div className="cp-body">
         {showModules && (

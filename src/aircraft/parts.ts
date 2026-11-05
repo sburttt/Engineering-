@@ -420,6 +420,23 @@ export function buildParts(): Part[] {
     mat: 'exhaust',
     role: 'internal',
   });
+  // Nozzle finish: a machined lip around the slot and a dark, recessed throat a little inside it
+  {
+    const slotAt = (x: number, k: number, th: number): P3 => {
+      const sn = Math.sin(th);
+      return [x, yMidTail + Math.sign(sn) * Math.pow(Math.abs(sn), 0.5) * slotB * k, slotA * k * Math.cos(th)];
+    };
+    const lipPts: THREE.Vector3[] = [];
+    for (let i = 0; i < 96; i++) lipPts.push(new THREE.Vector3(...slotAt(TAIL_X - 0.004, 1.0, (i / 96) * Math.PI * 2)));
+    add({ key: 'exhaust-lip', componentId: 'exhaust', geometry: new THREE.TubeGeometry(new THREE.CatmullRomCurve3(lipPts, true), 120, 0.012, 8, true), mat: 'exhaust', role: 'shell' });
+    add({
+      key: 'exhaust-throat',
+      componentId: 'exhaust',
+      geometry: ringFace(64, (th) => slotAt(TAIL_X + 0.22, 0.97, th), () => [TAIL_X + 0.22, yMidTail, 0], new THREE.Vector3(-1, 0, 0)),
+      mat: 'inletDark',
+      role: 'shell',
+    });
+  }
 
   /* ---------- Seams on the body ---------- */
   const bodySeams: P3[][] = [];
@@ -707,43 +724,109 @@ function landingGear(side: 'nose' | 'port' | 'stbd', x: number, z: number, R: nu
   const top = hLo(x, z) + 0.18;
   const axleY = GROUND_Y + R;
   const out: Part[] = [];
-  const cyl = (rad: number, len: number) => new THREE.CylinderGeometry(rad, rad, len, 20);
-  const outerLen = (top - axleY) * 0.58;
-  const innerLen = Math.max(0.1, (top - axleY - R - 0.08) * 0.62);
-  const strut = mergeGeos([
-    baked(cyl(r, outerLen), [x, top - outerLen / 2, z]),
-    baked(cyl(r * 0.68, innerLen), [x, axleY + R + 0.08 + innerLen / 2, z]),
-    // torque link
-    baked(new THREE.BoxGeometry(0.04, 0.2, 0.03), [x + 0.09, axleY + R + 0.1 + innerLen * 0.75, z], [0, 0, 0.5]),
-    baked(new THREE.BoxGeometry(0.04, 0.2, 0.03), [x + 0.09, axleY + R + 0.1 + innerLen * 0.3, z], [0, 0, -0.5]),
-    // fork: yoke above the tyre, two cheek plates and an axle
-    baked(new THREE.BoxGeometry(0.14, 0.05, w + 0.12), [x, axleY + R + 0.07, z]),
-    baked(new THREE.BoxGeometry(0.1, R + 0.1, 0.022), [x, axleY + (R + 0.1) / 2, z + w / 2 + 0.045]),
-    baked(new THREE.BoxGeometry(0.1, R + 0.1, 0.022), [x, axleY + (R + 0.1) / 2, z - w / 2 - 0.045]),
-    baked(new THREE.CylinderGeometry(0.03, 0.03, w + 0.14, 12), [x, axleY, z], [Math.PI / 2, 0, 0]),
-    // drag brace (main gear)
-    ...(side === 'nose' ? [] : [baked(cyl(0.03, 1.0), [x - 0.32, top - 0.4, z], [0, 0, -0.75])]),
-  ]);
-  out.push({ key: `${id}-strut`, componentId: `${id}-strut`, geometry: strut, mat: 'metal', role: 'hardware' });
-  const wheelOffsets = [0];
-  for (const dz of wheelOffsets) {
-    const tyre = new THREE.TorusGeometry(R - w * 0.48, w * 0.48, 16, 40);
-    const hub = cyl(R * 0.55, w * 0.9);
-    out.push({ key: `${id}-tyre`, componentId: `${id}-wheel`, geometry: baked(tyre, [x, axleY, z + dz], [0, 0, 0], [1, 1, 1.0]), mat: 'rubber', role: 'hardware' });
-    out.push({ key: `${id}-hub`, componentId: `${id}-wheel`, geometry: baked(hub, [x, axleY, z + dz], [Math.PI / 2, 0, 0]), mat: 'moduleLight', role: 'hardware' });
+  const cyl = (rad: number, len: number, seg = 24) => new THREE.CylinderGeometry(rad, rad, len, seg);
+  /** cylinder between two points */
+  const rod = (a: P3, b: P3, rad: number, seg = 12) => {
+    const va = new THREE.Vector3(...a);
+    const vb = new THREE.Vector3(...b);
+    const g = cyl(rad, va.distanceTo(vb), seg);
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), vb.clone().sub(va).normalize());
+    g.applyQuaternion(q);
+    const m = va.add(vb).multiplyScalar(0.5);
+    g.translate(m.x, m.y, m.z);
+    return g;
+  };
+  const yokeY = axleY + R + 0.07;
+  const oleoBottom = top - (top - yokeY) * 0.55;
+  const front = side === 'nose' ? 1 : -1; // torque links face the direction of travel / aft for the mains
+  const zOut = side === 'port' ? -1 : side === 'stbd' ? 1 : 0;
+
+  // Painted parts: trunnion block, oleo cylinder, yoke and fork
+  const painted: THREE.BufferGeometry[] = [
+    baked(rbox(0.26, 0.1, 0.2, 0.02), [x, top - 0.02, z]),
+    baked(cyl(r, top - oleoBottom), [x, (top + oleoBottom) / 2, z]),
+    baked(new THREE.TorusGeometry(r * 0.98, 0.012, 8, 28), [x, oleoBottom + 0.01, z], [Math.PI / 2, 0, 0]),
+    baked(rbox(0.16, 0.055, w + 0.14, 0.012), [x, yokeY, z]),
+    baked(rbox(0.11, R + 0.1, 0.022, 0.006), [x, axleY + (R + 0.1) / 2 - 0.01, z + w / 2 + 0.05]),
+    baked(rbox(0.11, R + 0.1, 0.022, 0.006), [x, axleY + (R + 0.1) / 2 - 0.01, z - w / 2 - 0.05]),
+  ];
+  // Chromed piston, axle and link pins
+  const bright: THREE.BufferGeometry[] = [
+    baked(cyl(r * 0.62, oleoBottom - yokeY + 0.02), [x, (oleoBottom + yokeY) / 2, z]),
+    baked(cyl(0.028, w + 0.16, 14), [x, axleY, z], [Math.PI / 2, 0, 0]),
+  ];
+  // Scissor torque links (upper and lower arm meeting at a pinned knee)
+  const lx = x + front * (r + 0.05);
+  const knee: P3 = [lx + front * 0.07, (oleoBottom + yokeY) / 2, z];
+  const links: THREE.BufferGeometry[] = [
+    rod([x + front * r, oleoBottom - 0.02, z], knee, 0.018, 8),
+    rod(knee, [x + front * r * 0.7, yokeY + 0.02, z], 0.018, 8),
+  ];
+  for (const pin of [[x + front * r, oleoBottom - 0.02, z], knee, [x + front * r * 0.7, yokeY + 0.02, z]] as P3[]) bright.push(baked(cyl(0.012, 0.07, 10), pin, [Math.PI / 2, 0, 0]));
+
+  if (side === 'nose') {
+    // steering collar and a taxi light on the forward face
+    painted.push(baked(new THREE.TorusGeometry(r * 1.25, 0.022, 8, 28), [x, top - 0.14, z], [Math.PI / 2, 0, 0]));
+    painted.push(baked(rbox(0.08, 0.07, 0.1, 0.015), [x + r + 0.04, top - 0.3, z]));
+    out.push({ key: `${id}-light`, componentId: `${id}-strut`, geometry: baked(cyl(0.028, 0.012, 20), [x + r + 0.085, top - 0.3, z], [0, 0, Math.PI / 2]), mat: 'glass', role: 'hardware' });
+  } else {
+    // folding side brace from the strut to the inboard well edge, and a retraction actuator
+    const inboard = z - zOut * 0.55;
+    const brTop: P3 = [x, hLo(x, inboard) + 0.04, inboard];
+    const brLow: P3 = [x, (top + oleoBottom) / 2 - 0.05, z - zOut * r];
+    const brKnee: P3 = [x + 0.06, (brTop[1] + brLow[1]) / 2 + 0.08, (brTop[2] + brLow[2]) / 2];
+    links.push(rod(brTop, brKnee, 0.024, 10), rod(brKnee, brLow, 0.024, 10));
+    bright.push(baked(cyl(0.016, 0.08, 10), brKnee, [Math.PI / 2, 0, 0]));
+    const acA: P3 = [x - 0.42, hLo(x - 0.42, z) + 0.03, z];
+    const acB: P3 = [x - r, top - 0.22, z];
+    painted.push(rod(acA, [lerp(acA[0], acB[0], 0.6), lerp(acA[1], acB[1], 0.6), z], 0.03, 12));
+    bright.push(rod([lerp(acA[0], acB[0], 0.55), lerp(acA[1], acB[1], 0.55), z], acB, 0.017, 10));
   }
-  // doors (open, hanging)
+  out.push({ key: `${id}-strut`, componentId: `${id}-strut`, geometry: mergeGeos(painted), mat: 'module', role: 'hardware' });
+  out.push({ key: `${id}-piston`, componentId: `${id}-strut`, geometry: mergeGeos(bright), mat: 'metal', role: 'hardware' });
+  out.push({ key: `${id}-links`, componentId: `${id}-strut`, geometry: mergeGeos(links), mat: 'moduleLight', role: 'hardware' });
+
+  // Wheel: tyre, hub with bolt circle, brake disc on the mains
+  const tyre = new THREE.TorusGeometry(R - w * 0.48, w * 0.48, 18, 48);
+  tyre.scale(1, 1, 1.12);
+  out.push({ key: `${id}-tyre`, componentId: `${id}-wheel`, geometry: baked(tyre, [x, axleY, z]), mat: 'rubber', role: 'hardware' });
+  const hub: THREE.BufferGeometry[] = [baked(cyl(R * 0.56, w * 0.92, 32), [x, axleY, z], [Math.PI / 2, 0, 0])];
+  const studs: THREE.BufferGeometry[] = [baked(cyl(R * 0.18, w * 0.96, 20), [x, axleY, z], [Math.PI / 2, 0, 0])];
+  for (let k = 0; k < 6; k++) {
+    const a2 = (k / 6) * Math.PI * 2;
+    for (const sz of [-1, 1]) studs.push(baked(cyl(0.011, 0.02, 8), [x + Math.cos(a2) * R * 0.32, axleY + Math.sin(a2) * R * 0.32, z + sz * w * 0.47], [Math.PI / 2, 0, 0]));
+  }
+  out.push({ key: `${id}-hub`, componentId: `${id}-wheel`, geometry: mergeGeos(hub), mat: 'moduleLight', role: 'hardware' });
+  out.push({ key: `${id}-studs`, componentId: `${id}-wheel`, geometry: mergeGeos(studs), mat: 'metal', role: 'hardware' });
+  if (side !== 'nose') out.push({ key: `${id}-brake`, componentId: `${id}-wheel`, geometry: baked(cyl(R * 0.5, 0.025, 32), [x, axleY, z - zOut * (w / 2 - 0.02)], [Math.PI / 2, 0, 0]), mat: 'exhaust', role: 'hardware' });
+
+  // Doors (open, hanging) with stiffening ribs on the inner face
+  const door = (len: number, h: number, pos: P3, tilt: number, sg: number) => {
+    const g: THREE.BufferGeometry[] = [rbox(len, h, 0.018, 0.008)];
+    for (const dx of [-len * 0.3, len * 0.3]) g.push(baked(new THREE.BoxGeometry(0.03, h * 0.8, 0.02), [dx, 0, -sg * 0.016]));
+    g.push(baked(new THREE.BoxGeometry(len * 0.8, 0.03, 0.02), [0, -h * 0.15, -sg * 0.016]));
+    return baked(mergeGeos(g), pos, [tilt, 0, 0]);
+  };
   if (side === 'nose') {
     for (const sg of [-1, 1]) {
-      const g = baked(new THREE.BoxGeometry(0.88, 0.42, 0.018), [4.75, hLo(4.75, sg * 0.22) - 0.21, sg * 0.235], [sg * 0.12, 0, 0]);
+      const g = door(0.88, 0.42, [4.75, hLo(4.75, sg * 0.22) - 0.21, sg * 0.235], sg * 0.12, sg);
       out.push({ key: `${id}-door-${sg}`, componentId: `${id}-doors`, geometry: g, mat: 'skinSatin', role: 'hardware' });
     }
   } else {
     const sg = side === 'port' ? -1 : 1;
     const dz = sg * 2.24;
-    const g = baked(new THREE.BoxGeometry(1.36, 0.54, 0.02), [-1.6, hLo(-1.6, dz) - 0.27, dz], [sg * -0.18, 0, 0]);
+    const g = door(1.36, 0.54, [-1.6, hLo(-1.6, dz) - 0.27, dz], sg * -0.18, sg);
     out.push({ key: `${id}-door`, componentId: `${id}-doors`, geometry: g, mat: 'skinSatin', role: 'hardware' });
   }
+
+  // Open wheel well: a dark recess over the well outline, just below the skin
+  const well = side === 'nose' ? { x0: 4.3, x1: 5.2, z0: -0.22, z1: 0.22 } : { x0: -2.3, x1: -0.9, z0: zOut < 0 ? -2.2 : 1.62, z1: zOut < 0 ? -1.62 : 2.2 };
+  const wellGeo = gridSurface(14, 8, (u, v) => {
+    const xx = lerp(well.x0 + 0.01, well.x1 - 0.01, u);
+    const zz = lerp(well.z0 + 0.01, well.z1 - 0.01, v);
+    return [xx, hLo(xx, zz) - 0.003, zz];
+  }, DOWN);
+  out.push({ key: `${id}-well`, componentId: id, geometry: wellGeo, mat: 'inletDark', role: 'hardware' });
   return out;
 }
 
