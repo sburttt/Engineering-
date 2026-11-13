@@ -6,17 +6,21 @@ import { PRESETS, PRESET_ORDER } from '../../aircraft/presets';
 import { subscribeView, type ViewReadout } from '../../aircraft/viewReadout';
 import { cine } from '../../aircraft/cinema';
 import { MATURITY } from '../../data/aircraft';
+import { SHEET_CAPTIONS } from '../../data/sheets';
+import { PAPER } from '../../state/store';
 import { Emblem } from '../brand/Logo';
 import { Icon } from './Icon';
 import { Callouts } from './Callouts';
 import { CinemaOverlay } from './CinemaOverlay';
 
-const RENDER_LABEL: Record<RenderMode, string> = { real: 'Realistic', xray: 'Transparent', wire: 'Wireframe', blueprint: 'Blueprint' };
+const RENDER_LABEL: Record<RenderMode, string> = { real: 'Realistic', xray: 'Transparent', wire: 'Wireframe', blueprint: 'Blueprint', sheet: 'Illustration', flow: 'Flow field' };
 const RENDER_HINT: Record<RenderMode, string> = {
   real: 'Studio materials and lighting',
   xray: 'Transparent shell, internal layout visible',
   wire: 'Hidden-line technical wireframe',
   blueprint: 'General-arrangement blueprint with dimensions',
+  sheet: 'White-sheet technical illustration, structure shown through the skin',
+  flow: 'Illustrative aerodynamic surface field with flow arrows (no CFD data)',
 };
 const MODE_LABEL: Record<ViewMode, string> = { exterior: 'Closed', cutaway: 'Cutaway', payload: 'Bay open' };
 
@@ -31,6 +35,8 @@ function LeftRail() {
   const startCinema = useStore((s) => s.startCinema);
   const setPanel = useStore((s) => s.setPanel);
   const open = useStore((s) => s.panel === 'rail');
+  const release = useStore((s) => s.release);
+  const setRelease = useStore((s) => s.setRelease);
   return (
     <aside className={`rail ${open ? 'open' : ''}`} aria-label="Visualisation">
       <div className="rail-id">
@@ -75,6 +81,11 @@ function LeftRail() {
             </button>
           ))}
         </div>
+        {mode === 'payload' && (
+          <button className="chk rail-release" aria-pressed={release} onClick={() => setRelease(!release)} title="Module release sequence (non-weapon mission module)">
+            {release ? 'Module released' : 'Release module'}
+          </button>
+        )}
       </section>
 
       <section className="rail-sec rail-asm">
@@ -164,6 +175,9 @@ function ControlsPanel() {
       <div className="pop-row">
         <button className="chk" aria-pressed={s.bayOpen} onClick={() => s.setBayOpen(!s.bayOpen)}>
           Bay doors {s.bayOpen ? 'open' : 'closed'}
+        </button>
+        <button className="chk" aria-pressed={s.release} onClick={() => s.setRelease(!s.release)}>
+          Release module
         </button>
         <button className="chk" aria-pressed={s.autoRotate} onClick={() => s.setAutoRotate(!s.autoRotate)}>
           Turntable
@@ -330,6 +344,30 @@ function MobileId() {
   );
 }
 
+/** Caption furniture for the white-sheet looks: title top-left, relation bottom-centre, designation bottom-left. */
+function SheetCaption() {
+  const render = useStore((s) => s.render);
+  const release = useStore((s) => s.release);
+  const immersive = useStore((s) => s.immersive);
+  if (!PAPER.includes(render)) return null;
+  const cap = release ? SHEET_CAPTIONS.release : SHEET_CAPTIONS[render as 'sheet' | 'flow'];
+  if (!cap) return null;
+  const eq = cap.eq.split(/(_[A-Za-z]|\^2)/).map((t, i) => (t.startsWith('_') ? <sub key={i}>{t.slice(1)}</sub> : t === '^2' ? <sup key={i}>2</sup> : t));
+  return (
+    <div className={`sheet-cap ${immersive ? 'imm' : ''}`} aria-hidden>
+      <div className="sc-title">
+        <b>{cap.title.toUpperCase()}</b>
+        <span>{cap.sub.toUpperCase()}</span>
+      </div>
+      <div className="sc-eq">
+        <i>{eq}</i>
+        <span>{cap.reading}</span>
+      </div>
+      <div className="sc-foot">CORVANE / CX-7 NIGHTFALL</div>
+    </div>
+  );
+}
+
 /** Blueprint sheet furniture: fine grid and a title block. */
 function BlueprintSheet() {
   const preset = useStore((s) => s.preset);
@@ -365,8 +403,9 @@ export function ViewerChrome() {
       </div>
     );
   return (
-    <div className={`chrome ${immersive ? 'immersive' : ''} r-${render}`}>
+    <div className={`chrome ${immersive ? 'immersive' : ''} r-${render} ${PAPER.includes(render) ? 'on-paper' : ''}`}>
       {render === 'blueprint' && <BlueprintSheet />}
+      <SheetCaption />
       <Callouts />
       {immersive ? (
         <>

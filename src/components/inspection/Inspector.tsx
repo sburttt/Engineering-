@@ -137,7 +137,7 @@ export function Inspector() {
         <dt>Location</dt>
         <dd>{c.location === 'external' ? 'Exterior' : 'Internal'}</dd>
         <dt>View</dt>
-        <dd>{{ real: 'Realistic', xray: 'Transparent', wire: 'Wireframe', blueprint: 'Blueprint' }[render]}</dd>
+        <dd>{{ real: 'Realistic', xray: 'Transparent', wire: 'Wireframe', blueprint: 'Blueprint', sheet: 'Illustration', flow: 'Flow field' }[render]}</dd>
       </dl>
 
       <div className="cp-body">

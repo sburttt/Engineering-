@@ -5,7 +5,7 @@ import { PRESET_ORDER } from '../aircraft/presets';
 /**
  * Viewer keyboard shortcuts (ignored while typing in a field):
  *   1–7 camera presets · R reset view · F full-screen inspection · X separation (transparent)
- *   B blueprint · W wireframe · Space pause the presentation
+ *   B blueprint · W wireframe · I illustration · A flow field · Space pause the presentation
  *   + / − zoom · Esc steps back: focus → selection → panels → full screen
  */
 export function useKeyboardShortcuts() {
@@ -31,6 +31,8 @@ export function useKeyboardShortcuts() {
       else if ((e.key === 'x' || e.key === 'X') && s.render === 'xray') s.setExplode(s.explode > 0.01 ? 0 : 0.8);
       else if (e.key === 'b' || e.key === 'B') s.setRender(s.render === 'blueprint' ? 'real' : 'blueprint');
       else if (e.key === 'w' || e.key === 'W') s.setRender(s.render === 'wire' ? 'real' : 'wire');
+      else if (e.key === 'i' || e.key === 'I') s.setRender(s.render === 'sheet' ? 'real' : 'sheet');
+      else if (e.key === 'a' || e.key === 'A') s.setRender(s.render === 'flow' ? 'real' : 'flow');
       else if (e.key === '+' || e.key === '=') s.zoom(0.8);
       else if (e.key === '-' || e.key === '_') s.zoom(1.25);
       else if (e.key === 'Escape') {

@@ -6,6 +6,8 @@ export const anim = {
   pitch: 0,
   roll: 0,
   bay: 0,
+  /** module release progress 0..1 */
+  release: 0,
   /** assembly separation, linear 0..1 progress (eased when applied) */
   asmT: 0,
   /** the assembly whose offsets are currently applied (lags the store while one collapses) */

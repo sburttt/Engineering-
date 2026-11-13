@@ -37,7 +37,7 @@ async function newPage(viewport) {
 }
 const state = (page) => page.evaluate(() => {
   const s = window.__nightfall.store.getState();
-  return { tab: s.tab, mode: s.mode, render: s.render, explodeAsm: s.explodeAsm, cinema: s.cinema, cinemaPlaying: s.cinemaPlaying, pitch: s.pitch, selectedId: s.selectedId, focusId: s.focusId, isolate: s.isolate, cutaway: s.cutaway, explode: s.explode, payloadId: s.payloadId, preset: s.preset, bayOpen: s.bayOpen, renderStatus: s.renderStatus };
+  return { tab: s.tab, mode: s.mode, render: s.render, release: s.release, explodeAsm: s.explodeAsm, cinema: s.cinema, cinemaPlaying: s.cinemaPlaying, pitch: s.pitch, selectedId: s.selectedId, focusId: s.focusId, isolate: s.isolate, cutaway: s.cutaway, explode: s.explode, payloadId: s.payloadId, preset: s.preset, bayOpen: s.bayOpen, renderStatus: s.renderStatus };
 });
 /** Click on triangles of a component's real geometry (projected to screen) until the expected selection happens. */
 async function pickComponent(page, id, ok) {
@@ -332,6 +332,41 @@ await shot(page, '10d-blueprint-top');
 await page.locator('.rail-list').getByRole('button', { name: /Realistic/ }).click();
 await settle(page, 2500);
 check('Back to realistic restores the normal lens', Math.abs((await page.evaluate(() => window.__nightfall.camera.zoom)) - 1) < 0.02);
+
+// White-sheet looks
+await page.locator('.rail-list').getByRole('button', { name: /Illustration/ }).click();
+await settle(page, 2500);
+const sheetBg = await page.evaluate(() => '#' + window.__nightfall.scene.background.getHexString());
+const throughSkin = await page.evaluate(() => [...window.__nightfall.registry.get('nav')].some((o) => !o.visible && o.parent.children.some((c) => c.isLineSegments && c.visible && c.material.depthTest === false)));
+check('Illustration: white sheet, structure drawn through the skin', /f5f5f2/i.test(sheetBg) && throughSkin && (await page.locator('.sheet-cap .sc-title').innerText()).includes('AIRFRAME STRUCTURE'), sheetBg);
+check('Illustration: caption carries a relation and the designation', /L = ½/.test(await page.locator('.sc-eq').innerText()) && /CORVANE \/ CX-7 NIGHTFALL/.test(await page.locator('.sc-foot').innerText()));
+await shot(page, '10i-illustration');
+await page.locator('.rail-list').getByRole('button', { name: /Flow field/ }).click();
+await settle(page, 2500);
+const flowOk = await page.evaluate(() => {
+  const o = [...window.__nightfall.registry.get('wing-stbd')].find((m) => m.isMesh && m.visible);
+  const info = window.__nightfall.renderInfo?.();
+  return { shader: o?.material?.customProgramCacheKey?.() === 'nf-flow', arrows: !!document.querySelector('canvas'), info };
+});
+check('Flow field: surface-field shader on the skin, caption says no CFD data', flowOk.shader && /NO CFD DATA/.test(await page.locator('.sc-title').innerText()));
+await shot(page, '10j-flow');
+await page.locator('.rail .seg').getByRole('button', { name: 'Bay open' }).click();
+await settle(page, 1500);
+await page.locator('.rail').getByRole('button', { name: /Release module/ }).click();
+await settle(page, 4500);
+st = await state(page);
+const dropped = await page.evaluate(() => [...window.__nightfall.registry.get('payload-map')][0].parent.position.y);
+check('Release sequence lowers the fitted module out of the bay', st.release && st.bayOpen && dropped < -1.2, `module y ${dropped.toFixed(2)}`);
+check('Release caption names a non-weapon module', /NON-WEAPON/.test(await page.locator('.sc-title').innerText()));
+await shot(page, '10k-release');
+await page.locator('.rail').getByRole('button', { name: /Module released/ }).click();
+await settle(page, 3000);
+check('Release toggles back and the module returns', !(await state(page)).release && (await page.evaluate(() => [...window.__nightfall.registry.get('payload-map')][0].parent.position.y)) > -0.2);
+await page.locator('.rail .seg').getByRole('button', { name: 'Closed' }).click();
+await page.locator('.rail-list').getByRole('button', { name: /Realistic/ }).click();
+await page.keyboard.press('Escape');
+await settle(page, 2000);
+check('Back to realistic: dark studio, caption gone', (await page.locator('.sheet-cap').count()) === 0);
 
 // Exploded assembly
 await presetBtn(page, 'Three-quarter').click();

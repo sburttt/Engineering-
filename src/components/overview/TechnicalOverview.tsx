@@ -237,7 +237,7 @@ export function TechnicalOverview() {
               <dt>Views</dt>
               <dd>Front, Side, Top, Rear, Three-quarter, Detail, Under (keys 1–7), R to reset</dd>
               <dt>Render</dt>
-              <dd>Realistic, Transparent, Wireframe (W) and Blueprint (B), all drawn from the same model</dd>
+              <dd>Realistic, Transparent, Wireframe (W), Blueprint (B), Illustration (I) and Flow field (A), all drawn from the same model; the flow field is a picture of the idea, not a computation</dd>
               <dt>Assemblies</dt>
               <dd>Nine exploded presentations with ID-numbered labels; Reassemble or Esc returns</dd>
               <dt>Inspect</dt>

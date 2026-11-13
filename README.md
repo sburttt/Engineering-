@@ -15,7 +15,7 @@ npm run build          # type-check + production build → dist/
 npm run build:single   # one self-contained HTML file → artifact/nightfall.html
 npm run validate       # data-integrity checks (no browser)
 npm run check:geometry # internals inside the skin, no see-through holes, markings on the skin
-npm run test:e2e -- 'http://127.0.0.1:4173/?render=low' e2e-shots   # 89 browser checks + screenshots (preview server running)
+npm run test:e2e -- 'http://127.0.0.1:4173/?render=low' e2e-shots   # 96 browser checks + screenshots (preview server running)
 ```
 
 Requires Node 20+. The end-to-end script uses Playwright with Chromium (it falls back to a global install).
@@ -26,13 +26,13 @@ The site opens directly on the aircraft. The viewer is the home page; the other 
 
 | Page | What you can do |
 | --- | --- |
-| Aircraft | Orbit / zoom / pan; seven presets (01 Front … 06 Detail, 07 Under); four render modes drawn from one model: Realistic, Transparent, Wireframe (hidden-line CAD edges and surface isoparms) and Blueprint (navy sheet, long lens, dimension guides, title block); configurations Closed, Cutaway and Bay open; nine exploded assemblies with ID-numbered callouts; click any part for its NF-number, a leader-line callout and a description; Focus view, Isolate; a 58-second, five-scene cinematic presentation with a scrubbable timeline; full-screen inspection (F). |
+| Aircraft | Orbit / zoom / pan; seven presets (01 Front … 06 Detail, 07 Under); six render modes drawn from one model: Realistic, Transparent, Wireframe (hidden-line CAD edges and surface isoparms), Blueprint (navy sheet, long lens, dimension guides, title block), Illustration (white sheet, pencil-shaded surfaces with the structure drawn through the skin) and Flow field (illustrative aerodynamic surface colour ramp with drifting flow arrows, no CFD data); a module-release sequence in the open bay (non-weapon module leaving the rails with trailing positions); configurations Closed, Cutaway and Bay open; nine exploded assemblies with ID-numbered callouts; click any part for its NF-number, a leader-line callout and a description; Focus view, Isolate; a 58-second, five-scene cinematic presentation with a scrubbable timeline; full-screen inspection (F). |
 | Overview | Technical overview: design philosophy, configuration notes linked to the 3D parts, drawings, finish concept, what can and cannot be measured, how to use the viewer |
 | Autonomy | Clickable 9-layer architecture, autonomy levels, capability matrix, safety mechanisms, synthetic scenario simulator with human authorisation and audit log |
 | Specification | Spec tables by category, plus plan / side / front views computed from the model geometry |
 | Research | 14 public-source references with labelled claims, filters and a comparison matrix |
 
-Keys in the viewer: 1–7 presets · R reset view · F full-screen inspection · W wireframe · B blueprint · X systems separation (Transparent) · +/− zoom · Space pauses the presentation · Esc steps back.
+Keys in the viewer: 1–7 presets · R reset view · F full-screen inspection · W wireframe · B blueprint · I illustration · A flow field · X systems separation (Transparent) · +/− zoom · Space pauses the presentation · Esc steps back.
 
 ## Rendering notes
 
@@ -42,6 +42,7 @@ Keys in the viewer: 1–7 presets · R reset view · F full-screen inspection ·
 - Studio lighting from soft light cards (no external HDR files), a shadow-casting key light and contact shadows.
 - Wireframe and blueprint use hidden-line drawing: surfaces write depth only, feature edges (`EdgesGeometry`, 28°) and isoparametric curves generated from the mould-line functions are drawn on top.
 - Exploded assemblies (`src/data/assemblies.ts`, `src/aircraft/assemblyOffsets.ts`) separate along directions derived from the geometry, never at random; the cinematic timeline (`src/aircraft/cinema.ts`) is a pure function of time.
+- The white-sheet looks (`src/aircraft/paper.ts`, `src/data/sheets.ts`) use flat paper materials and plain hemisphere light; the flow colour ramp is a function of position only and claims no pressure or velocity data.
 - Component ID numbers (NF-1xx exterior, 3xx interior, 4xx autonomy, 5xx equipment, 7xx access) are generated in `src/data/assemblies.ts`.
 - `?render=low` lowers resolution and turns shadows off; the automated tests use it on software GL.
 

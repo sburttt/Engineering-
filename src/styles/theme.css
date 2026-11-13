@@ -320,6 +320,41 @@ input[type='range'] { width: 100%; accent-color: var(--fg-2); height: 18px; marg
 .bp-title span + span { border-left: 1px solid rgba(214, 232, 248, 0.3); padding-left: 12px; color: rgba(214, 232, 248, 0.7); }
 .chrome.r-blueprint .rail, .chrome.r-blueprint .bottombar, .chrome.r-blueprint .vstatus { --muted: #7f9ab4; --fg-2: #b8cde0; --line-2: rgba(214, 232, 248, 0.22); --line: rgba(214, 232, 248, 0.14); }
 
+/* ---------- white-sheet looks (illustration, flow field) ---------- */
+.on-paper .hdr, .on-paper .chrome { --bg: #f5f5f2; --fg: #1d1e1f; --fg-2: #4a4c4e; --muted: #7d8083; --line: #d8d9d5; --line-2: #c3c4c0; --raise: rgba(245, 245, 242, 0.88); --accent: #0b6f85; --accent-2: #0b6f85; }
+.on-paper .hdr { background: #f5f5f2; }
+.on-paper .chrome { color: #1d1e1f; }
+.on-paper .cta { background: #1d1e1f; border-color: #1d1e1f; color: #f5f5f2; }
+.on-paper .cta:hover { background: #000; }
+.on-paper .rail .seg button[aria-pressed='true'] { background: rgba(29, 30, 31, 0.08); }
+.on-paper .chrome:not(.immersive):not(.cine-mode)::before { background: linear-gradient(90deg, rgba(245, 245, 242, 0.85) 0%, rgba(245, 245, 242, 0.55) 62%, rgba(245, 245, 242, 0) 100%) !important; }
+.on-paper .hover-tag { background: rgba(245, 245, 242, 0.9); }
+.on-paper .co polyline, .on-paper .co-rule, .on-paper .co-ring { stroke: rgba(29, 30, 31, 0.6); }
+.on-paper .co-dot { fill: #1d1e1f; }
+.on-paper .co-name { fill: #1d1e1f; }
+.on-paper .co-code { fill: #0b6f85; }
+.on-paper .cp { background: rgba(245, 245, 242, 0.92); }
+.on-paper .pop { background: rgba(245, 245, 242, 0.95); }
+.on-paper .index-panel, .on-paper .panel-head { background: rgba(245, 245, 242, 0.97); }
+.on-paper .presets button[aria-pressed='true']::before, .on-paper .hdr-link[aria-current='page']::after { background: #0b6f85; }
+.rail-release { justify-self: start; margin-top: 2px; }
+.sheet-cap { position: absolute; inset: 0; pointer-events: none !important; z-index: 10; color: #2c2d2e; font-family: 'Helvetica Neue', Arial, sans-serif; }
+.sc-title { position: absolute; left: 290px; top: 26px; display: grid; gap: 7px; }
+.sc-title b { font: 400 13px/1 'Helvetica Neue', Arial, sans-serif; letter-spacing: 0.1em; color: #2c2d2e; }
+.sc-title span { font: 400 7.5px/1 'Helvetica Neue', Arial, sans-serif; letter-spacing: 0.14em; color: #6f7275; }
+.sc-eq { position: absolute; left: 50%; bottom: 112px; transform: translateX(-50%); display: grid; gap: 6px; justify-items: center; text-align: center; }
+.sc-eq i { font: italic 400 17px/1.2 'Times New Roman', 'Georgia', serif; color: #1d1e1f; letter-spacing: 0.02em; }
+.sc-eq i sub, .sc-eq i sup { font-size: 11px; }
+.sc-eq span { font: 400 7.5px/1 'Helvetica Neue', Arial, sans-serif; letter-spacing: 0.06em; color: #6f7275; }
+.sc-foot { position: absolute; left: 290px; bottom: 92px; font: 400 7.5px/1 'Helvetica Neue', Arial, sans-serif; letter-spacing: 0.14em; color: #6f7275; }
+.sheet-cap.imm .sc-title, .sheet-cap.imm .sc-foot { left: var(--gx); }
+.sheet-cap.imm .sc-eq { bottom: 96px; }
+.sheet-cap.imm .sc-foot { bottom: 24px; }
+.sheet-cap.imm .sc-title { top: 64px; }
+.sheet-cap.imm .sc-foot { bottom: 64px; }
+.on-paper .hdr-prog b, .on-paper .hdr-prog span, .on-paper .brand { color: #1d1e1f; }
+.on-paper .hdr-prog span { color: #7d8083; }
+
 /* ---------- cinematic presentation ---------- */
 .cinema { position: absolute; inset: 0; z-index: 30; pointer-events: none; }
 .cinema > * { pointer-events: auto; }
@@ -628,6 +663,13 @@ ul.na li span:last-child { color: var(--muted); font-family: var(--f-mono); }
   .fb-note { display: none; }
   .fb-l b { font-size: 12px; margin-left: 4px; }
   .bp-title { display: none; }
+  .sc-title, .sc-foot { left: var(--gx); }
+  .sc-title { top: 84px; }
+  .sc-eq { bottom: 150px; left: var(--gx); right: var(--gx); transform: none; width: auto; }
+  .sc-foot { display: none; }
+  .sheet-cap.imm .sc-title { top: 44px; }
+  .on-paper .m-id .nf-title { display: none; }
+  .on-paper .m-id { bottom: 62px; }
   .imm-brand { top: 14px; }
   .imm-exit { top: 6px; }
   .cine-controls { grid-template-columns: auto 1fr auto; bottom: 8px; }

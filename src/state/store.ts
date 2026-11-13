@@ -7,7 +7,8 @@ export type Tab = 'aircraft' | 'overview' | 'autonomy' | 'specs' | 'research';
 /** Configuration of the aircraft: closed, partial cutaway, or with the payload bay open. */
 export type ViewMode = 'exterior' | 'cutaway' | 'payload';
 /** How the same model is drawn: studio materials, transparent shell, hidden-line wireframe, or blueprint. */
-export type RenderMode = 'real' | 'xray' | 'wire' | 'blueprint';
+/** sheet: white-paper technical illustration with the structure showing through · flow: illustrative aerodynamic surface field */
+export type RenderMode = 'real' | 'xray' | 'wire' | 'blueprint' | 'sheet' | 'flow';
 export type Cutaway = 'exterior' | 'partial' | 'internal';
 export type PresetId = 'front' | 'side' | 'top' | 'rear' | 'hero' | 'detail' | 'under' | 'internal';
 export type ScenarioId = 'nominal' | 'lost-link' | 'sensor-mismatch' | 'health-warning' | 'abort';
@@ -23,7 +24,9 @@ export type CameraRequest =
 
 export const TAB_ORDER: Tab[] = ['aircraft', 'overview', 'autonomy', 'specs', 'research'];
 export const MODE_ORDER: ViewMode[] = ['exterior', 'cutaway', 'payload'];
-export const RENDER_ORDER: RenderMode[] = ['real', 'xray', 'wire', 'blueprint'];
+export const RENDER_ORDER: RenderMode[] = ['real', 'xray', 'wire', 'blueprint', 'sheet', 'flow'];
+/** Modes drawn on a white sheet (light interface theme). */
+export const PAPER: RenderMode[] = ['sheet', 'flow'];
 /** Shell treatment follows from configuration and render mode. */
 export const cutawayOf = (mode: ViewMode, render: RenderMode): Cutaway =>
   render === 'xray' ? 'internal' : mode === 'cutaway' && render === 'real' ? 'partial' : 'exterior';
@@ -37,6 +40,8 @@ interface State {
   /** Cinematic presentation running (camera and interface are driven by the timeline). */
   cinema: boolean;
   cinemaPlaying: boolean;
+  /** Mission-module release sequence: the fitted module lowers out of the open bay with trailing positions. */
+  release: boolean;
   selectedId: string | null;
   hoveredId: string | null;
   /** Assembly the camera is focused on; its sub-components become individually selectable. */
@@ -64,6 +69,7 @@ interface State {
   setMode: (m: ViewMode | 'systems') => void;
   setRender: (r: RenderMode) => void;
   setExplodeAsm: (id: string | null) => void;
+  setRelease: (v: boolean) => void;
   startCinema: () => void;
   setCinemaPlaying: (v: boolean) => void;
   stopCinema: () => void;
@@ -102,6 +108,8 @@ const LEGACY: Record<string, [Tab, ViewMode?, RenderMode?]> = {
   bay: ['aircraft', 'payload'],
   payload: ['aircraft', 'payload'],
   blueprint: ['aircraft', 'exterior', 'blueprint'],
+  sheet: ['aircraft', 'exterior', 'sheet'],
+  flow: ['aircraft', 'exterior', 'flow'],
   wireframe: ['aircraft', 'exterior', 'wire'],
 };
 
@@ -132,6 +140,7 @@ export const useStore = create<State>((set, get) => ({
   explodeAsm: null,
   cinema: false,
   cinemaPlaying: false,
+  release: false,
   selectedId: null,
   hoveredId: null,
   focusId: null,
@@ -163,7 +172,7 @@ export const useStore = create<State>((set, get) => ({
     if (m === 'systems') return get().setRender('xray');
     const mode = m;
     const prev = get().mode;
-    set({ mode, cutaway: cutawayOf(mode, get().render), bayOpen: mode === 'payload', panel: get().panel === 'menu' ? 'none' : get().panel });
+    set({ mode, cutaway: cutawayOf(mode, get().render), bayOpen: mode === 'payload', release: mode === 'payload' && get().release, panel: get().panel === 'menu' ? 'none' : get().panel });
     if (mode === prev) return;
     if (get().explodeAsm) set({ explodeAsm: null });
     if (mode === 'payload') {
@@ -187,6 +196,11 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
+  setRelease: (release) => {
+    set({ release, bayOpen: release ? true : get().bayOpen, mode: release ? 'payload' : get().mode, cutaway: release ? cutawayOf('payload', get().render) : get().cutaway });
+    // frame the aircraft and the module trail from low on the starboard side
+    set({ cameraRequest: req({ kind: 'fit', id: release ? 'release' : 'bay', mode: 'locate' }), preset: null });
+  },
   setExplodeAsm: (id) => {
     const cur = get().explodeAsm;
     if (id === cur) return;
@@ -294,6 +308,7 @@ export const useStore = create<State>((set, get) => ({
       pitch: 0,
       roll: 0,
       bayOpen: false,
+      release: false,
       preset: 'hero',
       cameraRequest: req({ kind: 'preset', id: 'hero' }),
     }),

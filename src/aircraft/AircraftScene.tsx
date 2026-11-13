@@ -8,6 +8,8 @@ import { Animator } from './Animator';
 import { anim, boundsOf, boundsOfAll, publishView, view } from './runtime';
 import { ASSEMBLY_MAP } from '../data/assemblies';
 import { DURATION, cine, lightAt, poseAt, stateAt } from './cinema';
+import { PAPER_BG, buildFlowArrows } from './paper';
+import { buildParts } from './parts';
 import { GROUND_Y, HALF_SPAN, clamp, hLo, hUp, xLE, xTE } from './geometry/airframe';
 import { useStore } from '../state/store';
 import { PRESETS } from './presets';
@@ -16,7 +18,7 @@ import { COMPONENT_MAP } from '../data/components';
 export const TARGET0 = new THREE.Vector3(0.2, -0.15, 0);
 const BG = '#0b0c0e';
 /** Scene background per render mode. */
-export const BACKGROUND = { real: '#0b0c0e', xray: '#0a0c0f', wire: '#0d0f12', blueprint: '#0b1d33' } as const;
+export const BACKGROUND = { real: '#0b0c0e', xray: '#0a0c0f', wire: '#0d0f12', blueprint: '#0b1d33', sheet: PAPER_BG, flow: PAPER_BG } as const;
 /** Long lens for the blueprint: the same model read almost orthographically. */
 const lensFor = (r: string) => (r === 'blueprint' ? 3.4 : 1);
 
@@ -180,6 +182,17 @@ function CameraRig() {
       return;
     }
     // fit
+    if (req.id === 'release') {
+      // the release sequence: aircraft plus the module trail about 5 m below it
+      const bb = boundsOfAll(['fwd-fuselage', 'ctr-body', 'aft-body', 'wing-stbd', 'wing-port']);
+      if (!bb) return;
+      bb.min.y -= 4.8;
+      const sph = bb.getBoundingSphere(new THREE.Sphere());
+      const dist = Math.max(fitDistance(sph.radius) * 0.92, 8);
+      const t1 = sph.center.clone();
+      move.current = { p0, p1: t1.clone().add(new THREE.Vector3(0.42, -0.22, 0.88).normalize().multiplyScalar(dist)), t0, t1, t: 0, start: performance.now(), dur, ease: easeInOut };
+      return;
+    }
     const box = boundsOf(req.id);
     if (!box) return;
     if (req.mode === 'focus' && !saved.current) saved.current = { pos: p0.clone(), target: t0.clone() };
@@ -213,7 +226,7 @@ function CameraRig() {
       if (all) return hits.slice(0, 8).map(fmt);
       return hits[0] ? fmt(hits[0]) : null;
     };
-    w.__nightfall = { ...(w.__nightfall ?? {}), camera, controls, probe, cine };
+    w.__nightfall = { ...(w.__nightfall ?? {}), camera, controls, probe, cine, scene };
   }, [camera, controls, scene]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tmp = useMemo(() => new THREE.Vector3(), []);
@@ -406,8 +419,10 @@ function Lights() {
     if (!g) return;
     const lights = g.children.filter((o) => (o as THREE.Light).isLight) as THREE.Light[];
     if (!base.current) base.current = lights.map((l) => l.intensity);
-    lights.forEach((l, i) => (l.intensity = base.current![i] * anim.light));
-    scene.environmentIntensity = anim.light;
+    const r = useStore.getState().render;
+    const studio = r === 'sheet' || r === 'flow' ? 0 : anim.light;
+    lights.forEach((l, i) => (l.intensity = base.current![i] * studio));
+    scene.environmentIntensity = studio;
   });
   useEffect(() => {
     const l = key.current;
@@ -447,11 +462,90 @@ function Lights() {
 function SceneLook() {
   const render = useStore((s) => s.render);
   const scene = useThree((st) => st.scene);
+  const gl = useThree((st) => st.gl);
   useEffect(() => {
     scene.background = new THREE.Color(BACKGROUND[render]);
     scene.fog = render === 'real' || render === 'xray' ? new THREE.Fog(BACKGROUND[render], 38, 90) : null;
-  }, [render, scene]);
+    // the paper looks are flat illustrations: no filmic curve, lighter exposure
+    const onPaper = render === 'sheet' || render === 'flow';
+    gl.toneMapping = onPaper ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
+    gl.toneMappingExposure = onPaper ? 1 : 1.05;
+  }, [render, scene, gl]);
   return null;
+}
+
+/** Soft, even light for the sheet looks (the studio rig is far too contrasty on white paper). */
+function PaperLights() {
+  const render = useStore((s) => s.render);
+  if (render !== 'sheet' && render !== 'flow') return null;
+  return (
+    <group>
+      <hemisphereLight args={['#ffffff', '#b9bcc0', 1.35]} />
+      <directionalLight position={[6, 14, 9]} intensity={0.9} color="#ffffff" />
+      <directionalLight position={[-8, 5, -6]} intensity={0.35} color="#ffffff" />
+    </group>
+  );
+}
+
+/** Flow arrows for the surface-field look, drifting slowly aft. */
+function FlowArrows() {
+  const render = useStore((s) => s.render);
+  const built = useMemo(buildFlowArrows, []);
+  const mat = useMemo(() => new THREE.LineBasicMaterial({ color: '#2a2b2c', transparent: true, opacity: 0.8 }), []);
+  const a = useRef<THREE.LineSegments>(null);
+  const b = useRef<THREE.LineSegments>(null);
+  useFrame((_, dt) => {
+    if (render !== 'flow' || REDUCED_MOTION) return;
+    // two copies 30 m apart drift together; each wraps when it has moved a full period
+    for (const r of [a, b]) {
+      const o = r.current;
+      if (!o) continue;
+      o.position.x -= dt * 0.9;
+      if (o.position.x < -30) o.position.x += 60;
+    }
+  });
+  if (render !== 'flow') return null;
+  return (
+    <group>
+      <lineSegments ref={a} geometry={built.geometry} material={mat} raycast={() => null} />
+      <lineSegments ref={b} geometry={built.geometry} material={mat} position={[30, 0, 0]} raycast={() => null} />
+    </group>
+  );
+}
+
+/** Trailing positions of the released module (lighter copies below the aircraft). */
+function ReleaseTrail() {
+  const payloadId = useStore((s) => s.payloadId);
+  const render = useStore((s) => s.render);
+  const geos = useMemo(() => buildParts().filter((p) => p.payload === payloadId && p.kind !== 'lines').map((p) => p.geometry), [payloadId]);
+  const mats = useMemo(
+    () =>
+      [0.55, 0.3, 0.14].map((op) => new THREE.MeshStandardMaterial({ color: render === 'real' || render === 'xray' ? '#8a929b' : '#9c9ea0', transparent: true, opacity: op, depthWrite: false, roughness: 1 })),
+    [render],
+  );
+  const groups = [useRef<THREE.Group>(null), useRef<THREE.Group>(null), useRef<THREE.Group>(null)];
+  useFrame(() => {
+    const r = anim.release;
+    groups.forEach((g, i) => {
+      if (!g.current) return;
+      const k = (i + 1) * 0.3;
+      const t = THREE.MathUtils.clamp((r - k) / (1 - k), 0, 1);
+      g.current.visible = t > 0.001;
+      g.current.position.set(-0.25 - 0.55 * (i + 1) * t, -1.45 - 1.25 * (i + 1) * t, 0);
+      g.current.rotation.z = -0.1 - 0.07 * (i + 1) * t;
+    });
+  });
+  return (
+    <>
+      {groups.map((g, i) => (
+        <group key={i} ref={g} visible={false}>
+          {geos.map((geo, j) => (
+            <mesh key={j} geometry={geo} material={mats[i]} raycast={() => null} />
+          ))}
+        </group>
+      ))}
+    </>
+  );
 }
 
 /** Advances the presentation clock and applies the timeline's render state and light level. */
@@ -516,6 +610,9 @@ export default function AircraftScene({ active = true }: { active?: boolean }) {
       <SceneLook />
       <CinemaDriver />
       <Lights />
+      <PaperLights />
+      <FlowArrows />
+      <ReleaseTrail />
       <Floor />
       <Animator />
       <AircraftModel />

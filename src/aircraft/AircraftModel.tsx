@@ -9,6 +9,7 @@ import { useStore, type RenderMode } from '../state/store';
 import { anim, asmOffsets, registry, smoother } from './runtime';
 import { assemblyOffsets, hidesWhenSeparated, memberOf } from './assemblyOffsets';
 import { buildIsoLines } from './isoLines';
+import { SHEET_LINES, flowMaterial, paperMaterial } from './paper';
 
 /** Partial cutaway removes the upper starboard shell of the body (0 < z < 2.5, y > CLIP_Y). */
 export const CLIP_Y = -0.12;
@@ -23,12 +24,17 @@ const HIGHLIGHT = new THREE.Color('#bfe0e8');
 const NO_RAY = () => null;
 
 /** Line colours of the technical render modes: [normal, dimmed context, selected, hovered]. */
-export const LINE_STYLE: Record<'wire' | 'blueprint' | 'xray', { base: string; dim: string; sel: string; hov: string; op: number }> = {
+export const LINE_STYLE: Record<Exclude<RenderMode, 'real'>, { base: string; dim: string; sel: string; hov: string; op: number }> = {
   wire: { base: '#a3a9af', dim: '#30343a', sel: '#9fd3de', hov: '#d5dade', op: 0.9 },
   blueprint: { base: '#c4d8ea', dim: '#3a5774', sel: '#ffffff', hov: '#eaf3fb', op: 0.85 },
   xray: { base: '#8fa3b3', dim: '#2a3138', sel: '#9fd3de', hov: '#c8d6e0', op: 0.22 },
+  sheet: { base: SHEET_LINES.shell, dim: SHEET_LINES.dim, sel: SHEET_LINES.sel, hov: SHEET_LINES.hov, op: 0.85 },
+  flow: { base: '#5a5c5e', dim: '#c8c9c6', sel: SHEET_LINES.sel, hov: '#333', op: 0.35 },
 };
 const technical = (r: RenderMode) => r === 'wire' || r === 'blueprint';
+const paper = (r: RenderMode) => r === 'sheet' || r === 'flow';
+/** Shared sheet materials (one instance each; highlight state is carried by the edge lines). */
+const PAPER_MATS = { skin: paperMaterial('skin'), hardware: paperMaterial('hardware'), glass: paperMaterial('glass'), flow: flowMaterial() };
 
 /** Depth-only fill for hidden-line drawing: surfaces hide the lines behind them but are not drawn. */
 const DEPTH_ONLY = new THREE.MeshBasicMaterial({
@@ -53,7 +59,11 @@ function visualKey(s: ReturnType<typeof useStore.getState>, part: Part): string 
   const inAsm = !!asm && !!memberOf(asm, cid);
   const ctx = !!asm && !inAsm;
   const hidden =
-    (!!part.payload && part.payload !== s.payloadId) || (s.isolate && !inFocus) || (!!asm && inAsm && hidesWhenSeparated(asm, part)) || (technical(s.render) && part.mat.startsWith('decal-'));
+    (!!part.payload && part.payload !== s.payloadId) ||
+    (s.isolate && !inFocus) ||
+    (!!asm && inAsm && hidesWhenSeparated(asm, part)) ||
+    ((technical(s.render) || paper(s.render)) && part.mat.startsWith('decal-')) ||
+    (s.render === 'flow' && part.role === 'internal' && !inAsm && !s.bayOpen);
   let ghost = 0;
   if (part.role === 'shell' && s.cutaway === 'internal' && !focusedHere && !selectedHere && !inAsm) ghost = 0.07;
   if (ctx && s.render !== 'wire' && s.render !== 'blueprint') ghost = s.render === 'xray' ? 0.035 : 0.09;
@@ -105,7 +115,9 @@ function PartObject({ part }: { part: Part }) {
   const axis = useMemo(() => (part.pivot ? new THREE.Vector3(...part.pivot.axis).normalize() : null), [part]);
 
   // Edge lines (feature edges and patch boundaries), built the first time a line mode needs them.
-  const wantsEdges = render !== 'real' && part.kind !== 'instanced' && part.kind !== 'lines' && !part.decor && !(render === 'xray' && part.role !== 'shell');
+  const wantsEdges = render !== 'real' && part.kind !== 'instanced' && part.kind !== 'lines' && !part.decor && !(render === 'xray' && part.role !== 'shell') && !(render === 'flow' && part.role === 'internal');
+  // on the sheet, the structure is drawn through the skin as lighter lines
+  const throughSkin = render === 'sheet' && part.role === 'internal';
   const edgesRef = useRef<THREE.BufferGeometry | null>(null);
   if (wantsEdges && !edgesRef.current) edgesRef.current = new THREE.EdgesGeometry(geometry, 28);
   const lineMat = useMemo(() => new THREE.LineBasicMaterial({ transparent: true, depthWrite: false }), []);
@@ -161,13 +173,19 @@ function PartObject({ part }: { part: Part }) {
     if (render !== 'real') {
       const st = LINE_STYLE[render];
       const strong = vis.sel === 1 || vis.sel === 2;
-      lineMat.color.set(strong ? st.sel : vis.hov ? st.hov : vis.ctx ? st.dim : st.base);
-      lineMat.opacity = vis.ctx ? Math.min(st.op, 0.5) : strong && render === 'xray' ? 0.75 : st.op;
+      lineMat.color.set(strong ? st.sel : vis.hov ? st.hov : vis.ctx ? st.dim : throughSkin ? SHEET_LINES.internal : st.base);
+      lineMat.opacity = vis.ctx ? Math.min(st.op, 0.5) : strong && render === 'xray' ? 0.75 : throughSkin ? 0.5 : st.op;
+      lineMat.depthTest = !throughSkin;
       lineMat.clippingPlanes = vis.clip ? CLIP_PLANES : null;
       seamTech.color.set(vis.ctx ? st.dim : st.base);
-      seamTech.opacity = vis.ctx ? 0.25 : 0.55;
+      seamTech.opacity = vis.ctx ? 0.25 : render === 'flow' ? 0.3 : 0.55;
+      if (paper(render)) {
+        // the sheet materials are shared: fade context with a per-part opacity is not possible, so
+        // context parts go to a plain lighter tone via the edge lines only
+        lineMat.needsUpdate = true;
+      }
     }
-  }, [key, material, part.mat, vis.clip, vis.ghost, vis.hov, vis.sel, vis.ctx, render, lineMat, seamTech, isDecal]);
+  }, [key, material, part.mat, vis.clip, vis.ghost, vis.hov, vis.sel, vis.ctx, render, lineMat, seamTech, isDecal, throughSkin]);
 
   useFrame(() => {
     const g = group.current;
@@ -177,6 +195,13 @@ function PartObject({ part }: { part: Part }) {
       const o = asmOffsets.get(part.key);
       if (o) g.position.addScaledVector(o, smoother(anim.asmT));
     }
+    // module release: the fitted module leaves the rails, pitching slightly nose-down as it drops
+    if (part.payload && anim.release > 0.001) {
+      const r = smoother(anim.release);
+      g.position.y -= 1.45 * r;
+      g.position.x -= 0.25 * r;
+      g.rotation.z = -0.1 * r;
+    } else if (part.payload) g.rotation.z = 0;
     if (part.pivot && pivot.current && axis) {
       let a = 0;
       if (part.pivot.driver === 'elevon-port') a = anim.pitch + anim.roll;
@@ -187,6 +212,7 @@ function PartObject({ part }: { part: Part }) {
   });
 
   const tech = technical(render);
+  const onPaper = paper(render);
   const pickable = !vis.hidden && vis.ghost === 0 && part.kind !== 'lines' && !part.decor && vis.reach && !(tech && vis.ctx);
   const shadows = render === 'real' && !part.decor && part.kind !== 'lines' && vis.ghost === 0;
 
@@ -229,6 +255,12 @@ function PartObject({ part }: { part: Part }) {
     if (part.mat === 'seam') surfaceMat = seamTech;
     else if (part.decor) surfaceVisible = false;
     else surfaceMat = DEPTH_ONLY;
+  } else if (onPaper) {
+    if (part.mat === 'seam') surfaceMat = seamTech;
+    else if (part.decor) surfaceVisible = false;
+    else if (throughSkin) surfaceVisible = false;
+    else if (render === 'flow') surfaceMat = part.role === 'shell' || part.mat === 'glass' ? PAPER_MATS.flow : PAPER_MATS.hardware;
+    else surfaceMat = part.mat === 'glass' ? PAPER_MATS.glass : part.role === 'shell' ? PAPER_MATS.skin : PAPER_MATS.hardware;
   }
 
   let inner: React.ReactNode;
@@ -240,7 +272,7 @@ function PartObject({ part }: { part: Part }) {
         ref={obj as never}
         args={[geometry, material, part.instances!.length]}
         name={part.key}
-        visible={!tech}
+        visible={!tech && !onPaper}
         raycast={noRay as never}
         castShadow={shadows}
         receiveShadow={shadows}
@@ -283,13 +315,14 @@ function PartObject({ part }: { part: Part }) {
 function IsoLines() {
   const render = useStore((s) => s.render);
   const ref = useRef<THREE.LineSegments>(null);
-  const geo = useMemo(() => (technical(render) ? buildIsoLines() : null), [render === 'wire' || render === 'blueprint']); // eslint-disable-line react-hooks/exhaustive-deps
+  const on = technical(render) || render === 'sheet';
+  const geo = useMemo(() => (on ? buildIsoLines() : null), [on]);
   const mat = useMemo(() => new THREE.LineBasicMaterial({ transparent: true, depthWrite: false }), []);
   useLayoutEffect(() => {
-    if (!technical(render)) return;
-    mat.color.set(render === 'blueprint' ? '#8fb2d2' : '#5f666d');
-    mat.opacity = render === 'blueprint' ? 0.45 : 0.55;
-  }, [render, mat]);
+    if (!on) return;
+    mat.color.set(render === 'blueprint' ? '#8fb2d2' : render === 'sheet' ? '#9a9c9a' : '#5f666d');
+    mat.opacity = render === 'blueprint' ? 0.45 : render === 'sheet' ? 0.4 : 0.55;
+  }, [render, mat, on]);
   useFrame(() => {
     if (ref.current) ref.current.visible = anim.explode < 0.01 && !(anim.asmShown && anim.asmT > 0.01) && !useStore.getState().explodeAsm;
   });
