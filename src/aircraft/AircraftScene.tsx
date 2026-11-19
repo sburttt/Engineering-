@@ -9,6 +9,7 @@ import { anim, boundsOf, boundsOfAll, publishView, view } from './runtime';
 import { ASSEMBLY_MAP } from '../data/assemblies';
 import { DURATION, cine, lightAt, poseAt, stateAt } from './cinema';
 import { PAPER_BG, buildFlowArrows } from './paper';
+import { PROMO, PROMO_FLOOR_Y, promoPose } from './promo';
 import { buildParts } from './parts';
 import { GROUND_Y, HALF_SPAN, clamp, hLo, hUp, xLE, xTE } from './geometry/airframe';
 import { useStore } from '../state/store';
@@ -111,6 +112,15 @@ function CameraRig() {
     const s = useStore.getState();
     const id = s.mode === 'cutaway' || s.render === 'xray' ? 'internal' : s.render === 'blueprint' ? 'side' : 'hero';
     const { t, rel, p } = presetPose(id);
+    if (PROMO) {
+      const pp = promoPose();
+      const tg = new THREE.Vector3(...pp.target);
+      const { width, height } = get().size;
+      camera.position.set(...pp.pos).sub(tg).multiplyScalar(aspectScale(width, height)).add(tg);
+      controls.target.copy(tg);
+      controls.update();
+      return;
+    }
     if (s.mode === 'payload') {
       useStore.setState({ cameraRequest: { kind: 'fit', id: 'bay', mode: 'locate', nonce: -1 } });
     }
@@ -323,9 +333,9 @@ function FrameOffset() {
     const cam = state.camera as THREE.PerspectiveCamera;
     const { width, height } = state.size;
     const s = useStore.getState();
-    const panelOpen = !!s.selectedId && !s.immersive && !s.cinema;
+    const panelOpen = !!s.selectedId && !s.immersive && !s.cinema && !PROMO;
     let want = { x: 0, y: 0 };
-    if (s.cinema) want = { x: 0, y: 0 };
+    if (s.cinema || PROMO) want = { x: 0, y: 0 };
     else if (width > 900) {
       // the left rail takes ~250 px; the information panel ~360 px on the right
       const left = s.immersive ? 0 : 250;
@@ -374,6 +384,14 @@ function Floor() {
   useFrame(() => {
     if (group.current) group.current.visible = camera.position.y > GROUND_Y + 0.05 && (render === 'real' || render === 'xray');
   });
+  if (PROMO)
+    return (
+      // product shot: only a soft shadow on the white sweep, close under the gear-up aircraft
+      <group>
+        <ContactShadows position={[0.3, PROMO_FLOOR_Y, 0]} scale={30} blur={2.4} opacity={0.95} far={1.9} resolution={2048} color="#2a2d31" />
+        <ContactShadows position={[0.3, PROMO_FLOOR_Y + 0.001, 0]} scale={24} blur={1.1} opacity={0.6} far={0.7} resolution={2048} color="#000000" />
+      </group>
+    );
   return (
     <group ref={group}>
       <mesh rotation-x={-Math.PI / 2} position={[0, GROUND_Y - 0.004, 0]} raycast={() => null}>
@@ -445,6 +463,8 @@ function Lights() {
       <directionalLight position={[3, -10, 5]} intensity={1.4} color="#9aaabb" />
       <directionalLight position={[-4, -8, -6]} intensity={0.6} color="#8e9fb0" />
       <Environment resolution={LOW_POWER ? 64 : 256} frames={1}>
+        {/* promo: a white studio surround, so the graphite reads as soft satin grey */}
+        {PROMO && <color attach="background" args={['#c9cdd1']} />}
         {/* overhead softbox: the long, soft highlight that runs across the upper surfaces */}
         <Lightformer form="rect" intensity={1.5} color="#f4f2ef" position={[1, 11, 2]} rotation-x={Math.PI / 2} scale={[18, 5, 1]} />
         {/* strip lights: thin edge highlights along the leading edges and chines */}
@@ -464,12 +484,12 @@ function SceneLook() {
   const scene = useThree((st) => st.scene);
   const gl = useThree((st) => st.gl);
   useEffect(() => {
-    scene.background = new THREE.Color(BACKGROUND[render]);
-    scene.fog = render === 'real' || render === 'xray' ? new THREE.Fog(BACKGROUND[render], 38, 90) : null;
+    scene.background = new THREE.Color(PROMO ? '#ffffff' : BACKGROUND[render]);
+    scene.fog = !PROMO && (render === 'real' || render === 'xray') ? new THREE.Fog(BACKGROUND[render], 38, 90) : null;
     // the paper looks are flat illustrations: no filmic curve, lighter exposure
     const onPaper = render === 'sheet' || render === 'flow';
     gl.toneMapping = onPaper ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
-    gl.toneMappingExposure = onPaper ? 1 : 1.05;
+    gl.toneMappingExposure = onPaper ? 1 : PROMO ? 1.45 : 1.05;
   }, [render, scene, gl]);
   return null;
 }

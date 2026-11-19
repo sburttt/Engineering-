@@ -10,6 +10,7 @@ import { ResearchPage } from '../components/research/ResearchPage';
 import { AutonomyPage } from '../components/autonomy/AutonomyPage';
 import { TopView, SideView } from '../components/specifications/ThreeView';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
+import { PROMO } from '../aircraft/promo';
 
 const AircraftScene = lazy(() => import('../aircraft/AircraftScene'));
 
@@ -133,7 +134,7 @@ export default function App() {
   };
 
   return (
-    <div className={`app tab-${tab} ${immersive ? 'is-immersive' : ''} ${selected ? 'has-sel' : ''} ${busy ? 'has-asm' : ''} ${onPaper ? 'on-paper' : ''}`}>
+    <div className={`app tab-${tab} ${immersive ? 'is-immersive' : ''} ${selected ? 'has-sel' : ''} ${busy ? 'has-asm' : ''} ${onPaper ? 'on-paper' : ''} ${PROMO ? 'promo' : ''}`}>
       <Header />
       <main className="main">
         <div className={`stage ${showScene ? '' : 'hidden'}`} aria-hidden={!showScene}>

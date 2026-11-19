@@ -46,6 +46,13 @@ Keys in the viewer: 1–7 presets · R reset view · F full-screen inspection ·
 - Component ID numbers (NF-1xx exterior, 3xx interior, 4xx autonomy, 5xx equipment, 7xx access) are generated in `src/data/assemblies.ts`.
 - `?render=low` lowers resolution and turns shadows off; the automated tests use it on software GL.
 
+## Promo stills
+
+`?promo` renders the real model as a studio product shot: white seamless background, gear retracted,
+soft grounding shadow, no interface (`src/aircraft/promo.ts`). Variants: `?promo` (front three-quarter,
+port side), `?promo=starboard`, `?promo=low`. Open it in a browser at the size you want and take a
+screenshot, or render headlessly with Playwright at any resolution.
+
 ## Where things live
 
 - Entry point: `src/main.tsx` → `src/app/App.tsx`

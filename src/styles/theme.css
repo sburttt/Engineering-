@@ -704,3 +704,8 @@ ul.na li span:last-child { color: var(--muted); font-family: var(--f-mono); }
 @media (max-width: 440px) {
   .hdr-prog { display: none; }
 }
+
+/* ?promo: render-only product shot */
+.app.promo { grid-template-rows: minmax(0, 1fr); background: #fff; }
+.app.promo .hdr, .app.promo .chrome, .app.promo .cp-wrap, .app.promo .index-panel, .app.promo .loading { display: none !important; }
+.app.promo .viewport { background: #fff; }

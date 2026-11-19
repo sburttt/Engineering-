@@ -9,6 +9,7 @@ import { useStore, type RenderMode } from '../state/store';
 import { anim, asmOffsets, registry, smoother } from './runtime';
 import { assemblyOffsets, hidesWhenSeparated, memberOf } from './assemblyOffsets';
 import { buildIsoLines } from './isoLines';
+import { PROMO } from './promo';
 import { SHEET_LINES, flowMaterial, paperMaterial } from './paper';
 
 /** Partial cutaway removes the upper starboard shell of the body (0 < z < 2.5, y > CLIP_Y). */
@@ -63,7 +64,8 @@ function visualKey(s: ReturnType<typeof useStore.getState>, part: Part): string 
     (s.isolate && !inFocus) ||
     (!!asm && inAsm && hidesWhenSeparated(asm, part)) ||
     ((technical(s.render) || paper(s.render)) && part.mat.startsWith('decal-')) ||
-    (s.render === 'flow' && part.role === 'internal' && !inAsm && !s.bayOpen);
+    (s.render === 'flow' && part.role === 'internal' && !inAsm && !s.bayOpen) ||
+    (!!PROMO && cid.startsWith('gear-'));
   let ghost = 0;
   if (part.role === 'shell' && s.cutaway === 'internal' && !focusedHere && !selectedHere && !inAsm) ghost = 0.07;
   if (ctx && s.render !== 'wire' && s.render !== 'blueprint') ghost = s.render === 'xray' ? 0.035 : 0.09;
