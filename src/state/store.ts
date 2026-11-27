@@ -40,6 +40,8 @@ interface State {
   /** Cinematic presentation running (camera and interface are driven by the timeline). */
   cinema: boolean;
   cinemaPlaying: boolean;
+  /** which cinematic programme is running: the long presentation or the fast showcase reel */
+  cinemaProgram: 'presentation' | 'reel';
   /** Mission-module release sequence: the fitted module lowers out of the open bay with trailing positions. */
   release: boolean;
   selectedId: string | null;
@@ -70,7 +72,7 @@ interface State {
   setRender: (r: RenderMode) => void;
   setExplodeAsm: (id: string | null) => void;
   setRelease: (v: boolean) => void;
-  startCinema: () => void;
+  startCinema: (program?: 'presentation' | 'reel') => void;
   setCinemaPlaying: (v: boolean) => void;
   stopCinema: () => void;
   select: (id: string | null, opts?: { fly?: boolean }) => void;
@@ -140,6 +142,7 @@ export const useStore = create<State>((set, get) => ({
   explodeAsm: null,
   cinema: false,
   cinemaPlaying: false,
+  cinemaProgram: 'presentation',
   release: false,
   selectedId: null,
   hoveredId: null,
@@ -221,9 +224,11 @@ export const useStore = create<State>((set, get) => ({
     });
   },
 
-  startCinema: () =>
+  startCinema: (program = 'presentation') =>
     set({
       cinema: true,
+      cinemaProgram: program,
+      release: false,
       cinemaPlaying: true,
       immersive: true,
       panel: 'none',
@@ -246,6 +251,8 @@ export const useStore = create<State>((set, get) => ({
       cinema: false,
       cinemaPlaying: false,
       immersive: false,
+      bayOpen: false,
+      release: false,
       render: 'real',
       cutaway: cutawayOf(get().mode, 'real'),
       explode: 0,

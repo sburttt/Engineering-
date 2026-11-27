@@ -33,3 +33,25 @@ export function promoPose(): { pos: [number, number, number]; target: [number, n
 
 /** Height of the shadow-catching plane under the gear-up aircraft. */
 export const PROMO_FLOOR_Y = -0.78;
+
+/**
+ * `?reel` opens straight into the showcase reel with no interface (for screen recording or the
+ * frame-by-frame export in scripts/export-reel.mjs). `?reel=clean` also drops the scene labels.
+ */
+export const REEL_URL: string | null = (() => {
+  try {
+    const v = new URLSearchParams(location.search).get('reel');
+    return v === null ? null : v || 'labels';
+  } catch {
+    return null;
+  }
+})();
+
+/** `?reel&export`: the render loop is stopped and frames are stepped one at a time by the exporter. */
+export const EXPORT: boolean = (() => {
+  try {
+    return new URLSearchParams(location.search).has('export');
+  } catch {
+    return false;
+  }
+})();

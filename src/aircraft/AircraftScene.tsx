@@ -7,9 +7,9 @@ import { AircraftModel } from './AircraftModel';
 import { Animator } from './Animator';
 import { anim, boundsOf, boundsOfAll, publishView, view } from './runtime';
 import { ASSEMBLY_MAP } from '../data/assemblies';
-import { DURATION, cine, lightAt, poseAt, stateAt } from './cinema';
+import { cine, poseAt, prog } from './cinema';
 import { PAPER_BG, buildFlowArrows } from './paper';
-import { PROMO, PROMO_FLOOR_Y, promoPose } from './promo';
+import { EXPORT, PROMO, PROMO_FLOOR_Y, promoPose } from './promo';
 import { buildParts } from './parts';
 import { GROUND_Y, HALF_SPAN, clamp, hLo, hUp, xLE, xTE } from './geometry/airframe';
 import { useStore } from '../state/store';
@@ -236,7 +236,7 @@ function CameraRig() {
       if (all) return hits.slice(0, 8).map(fmt);
       return hits[0] ? fmt(hits[0]) : null;
     };
-    w.__nightfall = { ...(w.__nightfall ?? {}), camera, controls, probe, cine, scene };
+    w.__nightfall = { ...(w.__nightfall ?? {}), camera, controls, probe, cine, scene, duration: () => prog().duration };
   }, [camera, controls, scene]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tmp = useMemo(() => new THREE.Vector3(), []);
@@ -516,6 +516,13 @@ function FlowArrows() {
   const b = useRef<THREE.LineSegments>(null);
   useFrame((_, dt) => {
     if (render !== 'flow' || REDUCED_MOTION) return;
+    if (useStore.getState().cinema) {
+      // on the timeline the drift is a function of time, so playback, scrubbing and export agree
+      const wrap = (x: number) => ((((x + 30) % 60) + 60) % 60) - 30;
+      if (a.current) a.current.position.x = wrap(-0.9 * cine.t);
+      if (b.current) b.current.position.x = wrap(30 - 0.9 * cine.t);
+      return;
+    }
     // two copies 30 m apart drift together; each wraps when it has moved a full period
     for (const r of [a, b]) {
       const o = r.current;
@@ -568,23 +575,93 @@ function ReleaseTrail() {
   );
 }
 
-/** Advances the presentation clock and applies the timeline's render state and light level. */
+/**
+ * Advances the presentation clock and applies the timeline's render state and light level.
+ * When playback crosses one of the programme's look changes, the outgoing look is rendered once
+ * more and copied to the overlay canvas before the switch, so the overlay can hand it over to the
+ * new look with a scan or a dissolve (the two looks never have to be drawn together).
+ */
 function CinemaDriver() {
-  useFrame((_, dt) => {
+  const savedPayload = useRef<string | null>(null);
+  useFrame(({ gl, scene, camera }, dt) => {
     const s = useStore.getState();
     if (!s.cinema) {
       if (anim.light !== 1) anim.light = Math.min(1, anim.light + dt * 1.5);
+      if (anim.locked) {
+        anim.locked = false;
+        cine.active = null;
+        if (savedPayload.current) useStore.setState({ payloadId: savedPayload.current });
+        savedPayload.current = null;
+      }
       return;
     }
-    if (s.cinemaPlaying) {
-      cine.t = Math.min(DURATION, cine.t + Math.min(dt, 0.5));
-      if (cine.t >= DURATION) s.setCinemaPlaying(false);
+    cine.prog = s.cinemaProgram;
+    const P = prog();
+    const prev = cine.last;
+    if (s.cinemaPlaying && !cine.manual) {
+      cine.t = Math.min(P.duration, cine.t + Math.min(dt, 0.5));
+      if (cine.t >= P.duration) s.setCinemaPlaying(false);
     }
-    anim.light = lightAt(cine.t);
-    const want = stateAt(cine.t);
-    if (s.render !== want.render) s.setRender(want.render);
-    if (Math.abs(s.explode - want.explode) > 1e-3) s.setExplode(want.explode);
+    const t = cine.t;
+    cine.last = t;
+    anim.light = P.lightAt(t);
+    const want = P.stateAt(t);
+    if (s.render !== want.render) {
+      const tr = P.transitions.find((x) => x.t > prev && x.t <= t + 1e-6);
+      const forward = t >= prev && t - prev < 0.75;
+      const snap = cine.snap;
+      if (tr && forward && snap && !REDUCED_MOTION) {
+        // one more frame of the outgoing look, copied before the browser presents the buffer
+        gl.render(scene, camera);
+        const c = gl.domElement;
+        if (snap.width !== c.width || snap.height !== c.height) Object.assign(snap, { width: c.width, height: c.height });
+        snap.getContext('2d')?.drawImage(c, 0, 0);
+        cine.active = tr;
+      } else cine.active = null;
+      s.setRender(want.render);
+    }
+    if (cine.active && (t < cine.active.t || t > cine.active.t + cine.active.dur)) cine.active = null;
+    if (want.bay !== undefined) {
+      // the reel drives the doors, the module and the separation directly from its timeline
+      anim.locked = true;
+      anim.bay = want.bay;
+      anim.release = want.release ?? 0;
+      anim.explode = want.explode;
+      const open = want.bay > 0.01;
+      if (s.bayOpen !== open) s.setBayOpen(open);
+      if (want.payload && s.payloadId !== want.payload) {
+        if (!savedPayload.current) savedPayload.current = s.payloadId;
+        s.setPayload(want.payload);
+        s.select(null);
+      }
+    } else {
+      anim.locked = false;
+      if (Math.abs(s.explode - want.explode) > 1e-3) s.setExplode(want.explode);
+    }
   });
+  return null;
+}
+
+/**
+ * Export hook (`?reel&export`): the render loop is stopped and `__nightfall.step(t)` renders exactly
+ * one frame at timeline time t, with a frame delta that matches the export frame rate.
+ */
+function ExportStepper() {
+  const advance = useThree((st) => st.advance);
+  useEffect(() => {
+    if (!EXPORT) return;
+    const w = window as unknown as { __nightfall?: Record<string, unknown> };
+    let clock = 1000;
+    w.__nightfall = {
+      ...(w.__nightfall ?? {}),
+      step: (t: number, dt = 1 / 30) => {
+        cine.manual = true;
+        cine.t = t;
+        clock += dt * 1000;
+        advance(clock, true);
+      },
+    };
+  }, [advance]);
   return null;
 }
 
@@ -613,7 +690,7 @@ export default function AircraftScene({ active = true }: { active?: boolean }) {
   const setStatus = useStore((s) => s.setRenderStatus);
   return (
     <Canvas
-      frameloop={active ? 'always' : 'never'}
+      frameloop={active && !EXPORT ? 'always' : 'never'}
       dpr={LOW_POWER ? 0.5 : [1, 2]}
       shadows={!LOW_POWER}
       camera={{ fov: 32, position: PRESETS.hero.pos, near: 0.1, far: 1200 }}
@@ -639,6 +716,7 @@ export default function AircraftScene({ active = true }: { active?: boolean }) {
       <ControlsBinding />
       <CameraRig />
       <FrameOffset />
+      <ExportStepper />
     </Canvas>
   );
 }

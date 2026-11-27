@@ -10,7 +10,8 @@ import { ResearchPage } from '../components/research/ResearchPage';
 import { AutonomyPage } from '../components/autonomy/AutonomyPage';
 import { TopView, SideView } from '../components/specifications/ThreeView';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
-import { PROMO } from '../aircraft/promo';
+import { PROMO, REEL_URL } from '../aircraft/promo';
+import { cine } from '../aircraft/cinema';
 
 const AircraftScene = lazy(() => import('../aircraft/AircraftScene'));
 
@@ -125,6 +126,15 @@ export default function App() {
     if (!gl) useStore.getState().setRenderStatus('unavailable');
   }, [gl]);
 
+  // ?reel: start the showcase reel as soon as the airframe is ready
+  useEffect(() => {
+    if (!REEL_URL || status !== 'ready') return;
+    cine.t = 0;
+    cine.last = 0;
+    cine.clean = REEL_URL === 'clean';
+    useStore.getState().startCinema('reel');
+  }, [status]);
+
   const showScene = tab === 'aircraft';
 
   const onDoubleClick = () => {
@@ -134,7 +144,7 @@ export default function App() {
   };
 
   return (
-    <div className={`app tab-${tab} ${immersive ? 'is-immersive' : ''} ${selected ? 'has-sel' : ''} ${busy ? 'has-asm' : ''} ${onPaper ? 'on-paper' : ''} ${PROMO ? 'promo' : ''}`}>
+    <div className={`app tab-${tab} ${immersive ? 'is-immersive' : ''} ${selected ? 'has-sel' : ''} ${busy ? 'has-asm' : ''} ${onPaper ? 'on-paper' : ''} ${PROMO ? 'promo' : ''} ${REEL_URL ? 'capture' : ''}`}>
       <Header />
       <main className="main">
         <div className={`stage ${showScene ? '' : 'hidden'}`} aria-hidden={!showScene}>

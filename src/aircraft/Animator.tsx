@@ -10,12 +10,12 @@ export function Animator() {
   useFrame((_, dt) => {
     const s = useStore.getState();
     const k = 1 - Math.exp(-dt * 6);
-    anim.explode += (s.explode - anim.explode) * k;
+    if (!anim.locked) anim.explode += (s.explode - anim.explode) * k;
     anim.pitch += (s.pitch * DEG - anim.pitch) * k;
     anim.roll += (s.roll * DEG - anim.roll) * k;
-    anim.bay += ((s.bayOpen ? 1 : 0) - anim.bay) * (1 - Math.exp(-dt * 3));
+    if (!anim.locked) anim.bay += ((s.bayOpen ? 1 : 0) - anim.bay) * (1 - Math.exp(-dt * 3));
     // the module only moves once the doors are mostly open
-    anim.release += (((s.release && anim.bay > 0.7) ? 1 : 0) - anim.release) * (1 - Math.exp(-Math.min(dt, 0.5) * 2.2));
+    if (!anim.locked) anim.release += (((s.release && anim.bay > 0.7) ? 1 : 0) - anim.release) * (1 - Math.exp(-Math.min(dt, 0.5) * 2.2));
     // Assembly separation: a timed, eased move. Switching assemblies first closes the shown one.
     // wall-clock pacing (capped only against long stalls), so slow devices finish on time
     const step = Math.min(dt, 0.5) / ASM_SECONDS;

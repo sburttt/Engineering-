@@ -4,7 +4,7 @@ import { useStore } from '../../state/store';
 import { COMPONENT_MAP } from '../../data/components';
 import { ASSEMBLY_MAP, assemblyLabels, codeOf } from '../../data/assemblies';
 import { boundsOf, view } from '../../aircraft/runtime';
-import { calloutsAt, cine } from '../../aircraft/cinema';
+import { cine, prog } from '../../aircraft/cinema';
 import { DIMENSIONS } from '../../data/aircraft';
 
 /** Components labelled in the blueprint presentation (general arrangement). */
@@ -61,7 +61,7 @@ export function Callouts() {
       const h = view.height;
       const narrow = w < 900;
       let ids: string[] = [];
-      if (s.cinema) ids = calloutsAt(cine.t);
+      if (s.cinema) ids = prog().calloutsAt(cine.t);
       else if (s.explodeAsm) ids = assemblyLabels(ASSEMBLY_MAP[s.explodeAsm]);
       else if (s.selectedId && !narrow) ids = [s.selectedId];
       else if (s.render === 'blueprint' && !narrow) {

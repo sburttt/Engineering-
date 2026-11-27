@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../state/store';
-import { DURATION, SCENES, captionsAt, cine, sceneAt, type Caption } from '../../aircraft/cinema';
+import { PROGRAMMES, cine, sceneAt, type Caption } from '../../aircraft/cinema';
+import { inOut } from '../../aircraft/timeline';
 import { Emblem } from '../brand/Logo';
 import { Icon } from './Icon';
 
@@ -11,6 +12,11 @@ export function CinemaOverlay() {
   const playing = useStore((s) => s.cinemaPlaying);
   const setPlaying = useStore((s) => s.setCinemaPlaying);
   const stop = useStore((s) => s.stopCinema);
+  const programId = useStore((s) => s.cinemaProgram);
+  const render = useStore((s) => s.render);
+  const P = PROGRAMMES[programId];
+  const DURATION = P.duration;
+  const SCENES = P.scenes;
   const [t, setT] = useState(0);
   const [idle, setIdle] = useState(false);
   const idleTimer = useRef(0);
@@ -53,14 +59,23 @@ export function CinemaOverlay() {
     setT(cine.t);
   };
 
-  const caps = captionsAt(t);
+  const caps = P.captionsAt(t, cine.clean);
+  const label = caps.find((c) => c.kind === 'label');
   const cap = (k: Caption['kind']) => caps.find((c) => c.kind === k)?.opacity ?? 0;
+  cine.prog = programId;
   const scene = sceneAt(t);
   const ended = t >= DURATION - 0.01;
 
   return (
-    <div className={`cinema ${idle && playing ? 'idle' : ''}`}>
-      <div className="cine-bars" aria-hidden />
+    <div className={`cinema prog-${programId} ${idle && playing ? 'idle' : ''} ${render === 'sheet' || render === 'flow' ? 'on-white' : ''}`}>
+      <TransitionLayer />
+      {P.bars && <div className="cine-bars" aria-hidden />}
+      {label && (
+        <div className="cine-label" style={{ opacity: label.opacity }} aria-hidden>
+          <span className="cl-tick" />
+          {label.text}
+        </div>
+      )}
       {cap('logo') > 0 && (
         <div className="cine-logo" style={{ opacity: cap('logo') }} aria-hidden>
           <Emblem size={64} />
@@ -130,6 +145,64 @@ export function CinemaOverlay() {
           <Icon name="close" /> Exit
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The outgoing look, captured by the scene driver at a look change, handed over to the live picture:
+ * a scan (a fine line sweeps across with a soft edge behind it) or a dissolve.
+ */
+function TransitionLayer() {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const line = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    cine.snap = canvas.current;
+    let raf = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const c = canvas.current;
+      const l = line.current;
+      if (!c || !l) return;
+      const tr = cine.active;
+      if (!tr) {
+        c.style.visibility = 'hidden';
+        l.style.visibility = 'hidden';
+        return;
+      }
+      const p = inOut(Math.min(1, Math.max(0, (cine.t - tr.t) / tr.dur)));
+      c.style.visibility = 'visible';
+      if (tr.kind === 'dissolve') {
+        c.style.opacity = String(1 - p);
+        c.style.maskImage = c.style.webkitMaskImage = 'none';
+        l.style.visibility = 'hidden';
+        return;
+      }
+      // the edge travels a little past both sides so the feather clears the frame
+      const feather = 9;
+      const e = -feather + p * (100 + 2 * feather);
+      const fromLeft = tr.from !== 'right';
+      // the old picture stays on the far side of the edge
+      const mask = fromLeft
+        ? `linear-gradient(90deg, transparent ${e - feather}%, #000 ${e}%)`
+        : `linear-gradient(90deg, #000 ${100 - e}%, transparent ${100 - e + feather}%)`;
+      c.style.opacity = '1';
+      c.style.maskImage = c.style.webkitMaskImage = mask;
+      l.style.visibility = 'visible';
+      l.style.left = `${fromLeft ? e - feather / 2 : 100 - e + feather / 2}%`;
+      l.style.opacity = String(Math.min(1, 4 * Math.min(p, 1 - p)));
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      cine.snap = null;
+      cine.active = null;
+    };
+  }, []);
+  return (
+    <div className="cine-tr" aria-hidden>
+      <canvas ref={canvas} />
+      <div ref={line} className="cine-tr-line" />
     </div>
   );
 }

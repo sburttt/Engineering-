@@ -53,10 +53,22 @@ function LeftRail() {
           className="cta sm"
           onClick={() => {
             cine.t = 0;
+            cine.last = 0;
             startCinema();
           }}
         >
           <Icon name="play" /> Play presentation
+        </button>
+        <button
+          className="txt-btn rail-reel"
+          onClick={() => {
+            cine.t = 0;
+            cine.last = 0;
+            startCinema('reel');
+          }}
+          title="A fast 30-second showcase: realistic, transparent, flow field, illustration, bay release, reveal"
+        >
+          <Icon name="play" /> Showcase reel · 0:31
         </button>
       </div>
 
@@ -210,6 +222,7 @@ function BottomBar() {
           className="txt-btn bb-play"
           onClick={() => {
             cine.t = 0;
+            cine.last = 0;
             startCinema();
           }}
           title="Play the cinematic presentation"
@@ -334,6 +347,7 @@ function MobileId() {
           className="txt-btn"
           onClick={() => {
             cine.t = 0;
+            cine.last = 0;
             startCinema();
           }}
         >

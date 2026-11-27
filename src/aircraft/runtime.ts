@@ -14,6 +14,8 @@ export const anim = {
   asmShown: null as string | null,
   /** studio light level 0..1 (the cinematic intro fades the lights up) */
   light: 1,
+  /** the cinematic reel sets explode, bay and release directly from its timeline */
+  locked: false,
 };
 
 /** Smooth 0..1 easing with zero velocity at both ends. */

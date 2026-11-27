@@ -37,7 +37,7 @@ async function newPage(viewport) {
 }
 const state = (page) => page.evaluate(() => {
   const s = window.__nightfall.store.getState();
-  return { tab: s.tab, mode: s.mode, render: s.render, release: s.release, explodeAsm: s.explodeAsm, cinema: s.cinema, cinemaPlaying: s.cinemaPlaying, pitch: s.pitch, selectedId: s.selectedId, focusId: s.focusId, isolate: s.isolate, cutaway: s.cutaway, explode: s.explode, payloadId: s.payloadId, preset: s.preset, bayOpen: s.bayOpen, renderStatus: s.renderStatus };
+  return { tab: s.tab, mode: s.mode, render: s.render, release: s.release, explodeAsm: s.explodeAsm, cinema: s.cinema, cinemaPlaying: s.cinemaPlaying, cinemaProgram: s.cinemaProgram, pitch: s.pitch, selectedId: s.selectedId, focusId: s.focusId, isolate: s.isolate, cutaway: s.cutaway, explode: s.explode, payloadId: s.payloadId, preset: s.preset, bayOpen: s.bayOpen, renderStatus: s.renderStatus };
 });
 /** Click on triangles of a component's real geometry (projected to screen) until the expected selection happens. */
 async function pickComponent(page, id, ok) {
@@ -428,6 +428,34 @@ await page.keyboard.press('Escape');
 await settle(page, 1500);
 st = await state(page);
 check('Exit returns to the interactive viewer', !st.cinema && st.preset === 'hero' && (await page.locator('.rail').count()) === 1);
+
+// Showcase reel: realistic → transparent → flow → illustration → bay and pod → reveal
+const payloadBefore = st.payloadId;
+await page.locator('.rail').getByRole('button', { name: /Showcase reel/ }).click();
+await settle(page, 1500);
+st = await state(page);
+check('Showcase reel starts on the realistic look without letterbox or opening text', st.cinema && st.cinemaProgram === 'reel' && st.render === 'real' && (await page.locator('.cine-bars').count()) === 0 && (await page.locator('.cine-label, .cine-end').count()) === 0);
+await page.locator('.cine-controls').getByRole('button', { name: 'Pause' }).click();
+const reelAt = async (t) => {
+  await page.evaluate((t) => (window.__nightfall.cine.t = t), t);
+  await settle(page, 1400);
+  return state(page);
+};
+st = await reelAt(6.2);
+check('Reel scene 02 is the transparent look', st.render === 'xray' && /internal arrangement/i.test(await page.locator('.cine-label').textContent()));
+st = await reelAt(9.4);
+check('Reel scene 03 is the flow field, labelled as illustrative', st.render === 'flow' && /not CFD/i.test(await page.locator('.cine-label').textContent()));
+st = await reelAt(14.8);
+check('Reel scene 04 is the illustration with restrained callouts', st.render === 'sheet' && (await page.locator('.callouts .co').count()) >= 1 && (await page.locator('.callouts .co').count()) <= 3);
+st = await reelAt(23.5);
+check('Reel scene 05 opens the bay and releases the atmospheric survey pod', st.render === 'sheet' && st.bayOpen && st.payloadId === 'payload-env' && /non-weapon/i.test(await page.locator('.cine-label').textContent()));
+await shot(page, '10i-reel-release');
+st = await reelAt(30);
+check('Reel ends on the realistic look with the NIGHTFALL end card', st.render === 'real' && (await page.locator('.cine-end').count()) === 1);
+await page.keyboard.press('Escape');
+await settle(page, 1500);
+st = await state(page);
+check('Leaving the reel restores the fitted module and closes the bay', !st.cinema && st.payloadId === payloadBefore && !st.bayOpen);
 
 // Full-screen inspection
 await page.locator('.hdr').getByRole('button', { name: /Inspect/ }).click();
