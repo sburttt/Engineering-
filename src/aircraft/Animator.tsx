@@ -18,7 +18,7 @@ export function Animator() {
     if (!anim.locked) anim.release += (((s.release && anim.bay > 0.7) ? 1 : 0) - anim.release) * (1 - Math.exp(-Math.min(dt, 0.5) * 2.2));
     // Assembly separation: a timed, eased move. Switching assemblies first closes the shown one.
     // wall-clock pacing (capped only against long stalls), so slow devices finish on time
-    const step = Math.min(dt, 0.5) / ASM_SECONDS;
+    const step = Math.min(dt, 1) / ASM_SECONDS;
     if (anim.asmShown !== s.explodeAsm) {
       if (anim.asmShown && anim.asmT > 0) anim.asmT = Math.max(0, anim.asmT - step * 1.6);
       else {
