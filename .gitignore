@@ -4,3 +4,4 @@ dist-single
 artifact
 *.log
 .DS_Store
+e2e-shots
